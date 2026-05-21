@@ -2,52 +2,66 @@ import numpy as np
 import math
 
 class TFIDFVectorizer:
-    def __init__(self):
+    def __init__(self, ngram_range=(1, 2), min_df=2):
         self.vocab = {}          
         self.idf_values = {}     
         self.vocab_size = 0
+        self.ngram_range = ngram_range
+        self.min_df = min_df
 
     def clean(self, text):
         import re
         text = text.lower()
-        text = re.sub(r'[^a-z\s]', '', text)
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
         return text.split()
+
+    def get_ngrams(self, words):
+        tokens = []
+        min_n, max_n = self.ngram_range
+
+        for n in range(min_n, max_n + 1):
+            if len(words) < n:
+                continue
+
+            for index in range(len(words) - n + 1):
+                tokens.append(" ".join(words[index:index + n]))
+
+        return tokens
 
     def build_vocab(self, documents):
         # Step 1 — build vocabulary (same as tokenizer)
-        for doc in documents:
-            words = self.clean(doc)
-            for word in words:
-                if word not in self.vocab:
-                    self.vocab[word] = self.vocab_size
-                    self.vocab_size += 1
-
         total_docs = len(documents)
 
         doc_frequency = {}
         for doc in documents:
-            words = set(self.clean(doc))  
-            for word in words:
-                doc_frequency[word] = doc_frequency.get(word, 0) + 1
+            words = self.clean(doc)
+            tokens = set(self.get_ngrams(words))
+            for token in tokens:
+                doc_frequency[token] = doc_frequency.get(token, 0) + 1
 
 
-        for word, count in doc_frequency.items():
-            self.idf_values[word] = math.log(total_docs / count)
+        for token, count in doc_frequency.items():
+            if count >= self.min_df:
+                self.vocab[token] = self.vocab_size
+                self.vocab_size += 1
+                self.idf_values[token] = math.log(total_docs / count)
 
     def transform_one(self, text):
         words = self.clean(text)
+        tokens = self.get_ngrams(words)
         vector = np.zeros(self.vocab_size)
 
-        word_counts = {}
-        for word in words:
-            word_counts[word] = word_counts.get(word, 0) + 1
+        token_counts = {}
+        for token in tokens:
+            token_counts[token] = token_counts.get(token, 0) + 1
 
-        total_words = len(words)
-        for word, count in word_counts.items():
-            if word in self.vocab:
-                tf = count / total_words
-                idf = self.idf_values.get(word, 0)
-                index = self.vocab[word]
+        total_tokens = len(tokens)
+        for token, count in token_counts.items():
+            if token in self.vocab:
+                tf = count / total_tokens
+                idf = self.idf_values.get(token, 0)
+                index = self.vocab[token]
                 vector[index] = tf * idf
 
         return vector
@@ -75,13 +89,13 @@ if __name__ == "__main__":
     print("Vocab size:", vectorizer.vocab_size)
 
     # transform one statement and inspect it
-    test = "Hillary Clinton agrees with John McCain"
+    test = "Hillary Clinton agrees with John McCain on health care"
     vec = vectorizer.transform_one(test)
 
     print("\nVector shape:", vec.shape)
     print("Non-zero slots:", np.count_nonzero(vec))
-    print("\nTop scoring words in this statement:")
-    top_indices = np.argsort(vec)[::-1][:6]
-    index_to_word = {v: k for k, v in vectorizer.vocab.items()}
+    print("\nTop scoring tokens in this statement:")
+    top_indices = np.argsort(vec)[::-1][:10]
+    index_to_token = {v: k for k, v in vectorizer.vocab.items()}
     for idx in top_indices:
-        print(f"  {index_to_word[idx]:<15} score: {vec[idx]:.4f}")
+        print(f"  {index_to_token[idx]:<20} score: {vec[idx]:.4f}")
