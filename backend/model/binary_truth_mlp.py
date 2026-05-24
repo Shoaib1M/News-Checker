@@ -1,4 +1,5 @@
 from pathlib import Path
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,9 @@ COLUMNS = [
 
 FAKEISH_LABELS = {"pants-fire", "false", "barely-true"}
 TRUEISH_LABELS = {"half-true", "mostly-true", "true"}
+TEXT_FEATURE_COLUMNS = ["statement", "subject", "speaker", "job", "state", "party", "context"]
+HISTORY_COLUMNS = ["barely_true", "false", "half_true", "mostly_true", "pants_fire"]
+MODEL_FILE = Path(__file__).resolve().parent / "binary_truth_mlp.pkl"
 
 
 class BinaryTruthMLP:
@@ -25,7 +29,6 @@ class BinaryTruthMLP:
         learning_rate=0.05,
         epochs=40,
         batch_size=128,
-        patience=10,
         seed=42,
     ):
         self.input_size = input_size
@@ -33,7 +36,6 @@ class BinaryTruthMLP:
         self.lr = learning_rate
         self.epochs = epochs
         self.batch_size = batch_size
-        self.patience = patience
         self.best_threshold = 0.5
 
         rng = np.random.default_rng(seed)
@@ -68,10 +70,6 @@ class BinaryTruthMLP:
 
     def fit(self, X, y, X_valid=None, y_valid=None):
         n_samples = X.shape[0]
-        best_weights = None
-        best_valid_acc = -1
-        best_epoch = 0
-        epochs_without_improvement = 0
 
         for epoch in range(1, self.epochs + 1):
             indices = np.random.permutation(n_samples)
@@ -101,10 +99,11 @@ class BinaryTruthMLP:
                 self.W1 -= self.lr * dW1
                 self.b1 -= self.lr * db1
 
-            if epoch == 1 or epoch % 5 == 0:
+            should_report = epoch == 1 or epoch % 5 == 0
+            if should_report:
                 train_pred = self.predict_proba(X)
                 train_loss = self.loss(train_pred, y)
-                train_acc = accuracy(train_pred, y)
+                train_acc = accuracy(train_pred, y, threshold=0.5)
 
                 message = (
                     f"Epoch {epoch:03d} | "
@@ -124,34 +123,9 @@ class BinaryTruthMLP:
 
                 print(message)
 
-            if X_valid is not None and y_valid is not None and should_report:
-                valid_pred = self.predict_proba(X_valid)
-                valid_threshold, valid_acc = find_best_threshold(valid_pred, y_valid)
-
-                if valid_acc > best_valid_acc:
-                    best_valid_acc = valid_acc
-                    best_epoch = epoch
-                    self.best_threshold = valid_threshold
-                    best_weights = (
-                        self.W1.copy(),
-                        self.b1.copy(),
-                        self.W2.copy(),
-                        self.b2.copy(),
-                    )
-                    epochs_without_improvement = 0
-                else:
-                    epochs_without_improvement += 5
-
-                if epochs_without_improvement >= self.patience:
-                    print(
-                        f"Early stopping at epoch {epoch}. "
-                        f"Best validation accuracy was {best_valid_acc * 100:.2f}% "
-                        f"at epoch {best_epoch}."
-                    )
-                    break
-
-        if best_weights is not None:
-            self.W1, self.b1, self.W2, self.b2 = best_weights
+        if X_valid is not None and y_valid is not None:
+            valid_pred = self.predict_proba(X_valid)
+            self.best_threshold, _ = find_best_threshold(valid_pred, y_valid)
 
     def predict_proba(self, X):
         _, _, probability = self.forward(X)
@@ -161,6 +135,36 @@ class BinaryTruthMLP:
         if threshold is None:
             threshold = self.best_threshold
         return (self.predict_proba(X) >= threshold).astype(int)
+
+    def state_dict(self):
+        return {
+            "input_size": self.input_size,
+            "hidden_size": self.hidden_size,
+            "learning_rate": self.lr,
+            "epochs": self.epochs,
+            "batch_size": self.batch_size,
+            "best_threshold": self.best_threshold,
+            "W1": self.W1,
+            "b1": self.b1,
+            "W2": self.W2,
+            "b2": self.b2,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state):
+        model = cls(
+            input_size=state["input_size"],
+            hidden_size=state["hidden_size"],
+            learning_rate=state["learning_rate"],
+            epochs=state["epochs"],
+            batch_size=state["batch_size"],
+        )
+        model.best_threshold = state["best_threshold"]
+        model.W1 = state["W1"]
+        model.b1 = state["b1"]
+        model.W2 = state["W2"]
+        model.b2 = state["b2"]
+        return model
 
 
 def labels_to_binary(labels):
@@ -208,6 +212,89 @@ def build_history_features(df, train_max_values=None):
     return features / train_max_values, train_max_values
 
 
+def save_artifacts(path, model, vectorizer, train_max_values):
+    artifacts = {
+        "model": model.state_dict(),
+        "vectorizer": {
+            "vocab": vectorizer.vocab,
+            "idf_values": vectorizer.idf_values,
+            "vocab_size": vectorizer.vocab_size,
+            "ngram_range": vectorizer.ngram_range,
+            "min_df": vectorizer.min_df,
+        },
+        "train_max_values": train_max_values,
+    }
+
+    with open(path, "wb") as file:
+        pickle.dump(artifacts, file)
+
+
+def load_artifacts(path):
+    with open(path, "rb") as file:
+        artifacts = pickle.load(file)
+
+    vectorizer_state = artifacts["vectorizer"]
+    vectorizer = TFIDFVectorizer(
+        ngram_range=vectorizer_state["ngram_range"],
+        min_df=vectorizer_state["min_df"],
+    )
+    vectorizer.vocab = vectorizer_state["vocab"]
+    vectorizer.idf_values = vectorizer_state["idf_values"]
+    vectorizer.vocab_size = vectorizer_state["vocab_size"]
+
+    model = BinaryTruthMLP.from_state_dict(artifacts["model"])
+    return model, vectorizer, artifacts["train_max_values"]
+
+
+def make_prediction_features(
+    vectorizer,
+    train_max_values,
+    statement,
+    subject="",
+    speaker="",
+    job="",
+    state="",
+    party="",
+    context="",
+    barely_true=0,
+    false=0,
+    half_true=0,
+    mostly_true=0,
+    pants_fire=0,
+):
+    row = pd.DataFrame([{
+        "statement": statement,
+        "subject": subject,
+        "speaker": speaker,
+        "job": job,
+        "state": state,
+        "party": party,
+        "context": context,
+        "barely_true": barely_true,
+        "false": false,
+        "half_true": half_true,
+        "mostly_true": mostly_true,
+        "pants_fire": pants_fire,
+    }])
+
+    text = build_text_input(row)
+    text_features = normalize_rows(vectorizer.transform(text))
+    history_features, _ = build_history_features(row, train_max_values)
+    return np.hstack([text_features, history_features])
+
+
+def predict_statement(model, vectorizer, train_max_values, statement, **metadata):
+    X = make_prediction_features(
+        vectorizer=vectorizer,
+        train_max_values=train_max_values,
+        statement=statement,
+        **metadata,
+    )
+    score = model.predict_proba(X)[0]
+    predicted_class = "true-ish" if score >= model.best_threshold else "fake-ish"
+    return score, predicted_class, explain_probability(score)
+
+
 def explain_probability(score):
     if score < 0.20:
         return "very likely incorrect"
@@ -236,9 +323,17 @@ def main():
     vectorizer = TFIDFVectorizer()
     vectorizer.build_vocab(train_text)
 
-    X_train = normalize_rows(vectorizer.transform(train_df["statement"]))
-    X_valid = normalize_rows(vectorizer.transform(valid_df["statement"]))
-    X_test = normalize_rows(vectorizer.transform(test_df["statement"]))
+    X_train_text = normalize_rows(vectorizer.transform(train_text))
+    X_valid_text = normalize_rows(vectorizer.transform(valid_text))
+    X_test_text = normalize_rows(vectorizer.transform(test_text))
+
+    X_train_history, train_max_values = build_history_features(train_df)
+    X_valid_history, _ = build_history_features(valid_df, train_max_values)
+    X_test_history, _ = build_history_features(test_df, train_max_values)
+
+    X_train = np.hstack([X_train_text, X_train_history])
+    X_valid = np.hstack([X_valid_text, X_valid_history])
+    X_test = np.hstack([X_test_text, X_test_history])
 
     y_train = labels_to_binary(train_df["label"])
     y_valid = labels_to_binary(valid_df["label"])
@@ -253,18 +348,25 @@ def main():
         input_size=X_train.shape[1],
         hidden_size=64,
         learning_rate=0.05,
-        epochs=100,
+        epochs=70,
         batch_size=128,
-        patience=15,
     )
     model.fit(X_train, y_train, X_valid, y_valid)
 
+    save_artifacts(MODEL_FILE, model, vectorizer, train_max_values)
+    print(f"\nSaved model artifacts to: {MODEL_FILE}")
+
     test_scores = model.predict_proba(X_test)
     test_loss = model.loss(test_scores, y_test)
-    test_acc = accuracy(test_scores, y_test)
+    test_acc_default = accuracy(test_scores, y_test, threshold=0.5)
+    test_acc_tuned = accuracy(test_scores, y_test, threshold=model.best_threshold)
 
     print(f"\nFinal test loss: {test_loss:.4f}")
-    print(f"Final test accuracy: {test_acc * 100:.2f}%")
+    print(f"Final test accuracy at 0.50 threshold: {test_acc_default * 100:.2f}%")
+    print(
+        f"Final test accuracy at validation-tuned threshold "
+        f"({model.best_threshold:.2f}): {test_acc_tuned * 100:.2f}%"
+    )
 
     print("\nExample predictions:")
     for index in range(5):
@@ -275,6 +377,36 @@ def main():
         print(f"Actual label: {actual_label}")
         print(f"Probability true-ish: {score:.2f}")
         print(f"Meaning: {explain_probability(score)}")
+
+
+def interactive_predict():
+    if not MODEL_FILE.exists():
+        print("No saved model found yet.")
+        print("Train the model first by running: python binary_truth_mlp.py")
+        return
+
+    model, vectorizer, train_max_values = load_artifacts(MODEL_FILE)
+
+    print("Loaded saved binary truth MLP.")
+    print("Type a statement to score it. Press Enter on an empty line to quit.")
+    print("Note: without speaker/topic metadata, this is a claim-only estimate.\n")
+
+    while True:
+        statement = input("Statement: ").strip()
+        if not statement:
+            break
+
+        score, predicted_class, meaning = predict_statement(
+            model,
+            vectorizer,
+            train_max_values,
+            statement,
+        )
+
+        print(f"Probability true-ish: {score:.2f}")
+        print(f"Decision threshold: {model.best_threshold:.2f}")
+        print(f"Prediction: {predicted_class}")
+        print(f"Meaning: {meaning}\n")
 
 
 if __name__ == "__main__":
