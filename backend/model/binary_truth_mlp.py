@@ -15,8 +15,6 @@ COLUMNS = [
 
 FAKEISH_LABELS = {"pants-fire", "false", "barely-true"}
 TRUEISH_LABELS = {"half-true", "mostly-true", "true"}
-TEXT_FEATURE_COLUMNS = ["statement", "subject", "speaker", "job", "state", "party", "context"]
-HISTORY_COLUMNS = ["barely_true", "false", "half_true", "mostly_true", "pants_fire"]
 
 
 class BinaryTruthMLP:
@@ -103,11 +101,10 @@ class BinaryTruthMLP:
                 self.W1 -= self.lr * dW1
                 self.b1 -= self.lr * db1
 
-            should_report = epoch == 1 or epoch % 5 == 0
-            if should_report:
+            if epoch == 1 or epoch % 5 == 0:
                 train_pred = self.predict_proba(X)
                 train_loss = self.loss(train_pred, y)
-                train_acc = accuracy(train_pred, y, threshold=0.5)
+                train_acc = accuracy(train_pred, y)
 
                 message = (
                     f"Epoch {epoch:03d} | "
@@ -239,17 +236,9 @@ def main():
     vectorizer = TFIDFVectorizer()
     vectorizer.build_vocab(train_text)
 
-    X_train_text = normalize_rows(vectorizer.transform(train_text))
-    X_valid_text = normalize_rows(vectorizer.transform(valid_text))
-    X_test_text = normalize_rows(vectorizer.transform(test_text))
-
-    X_train_history, train_max_values = build_history_features(train_df)
-    X_valid_history, _ = build_history_features(valid_df, train_max_values)
-    X_test_history, _ = build_history_features(test_df, train_max_values)
-
-    X_train = np.hstack([X_train_text, X_train_history])
-    X_valid = np.hstack([X_valid_text, X_valid_history])
-    X_test = np.hstack([X_test_text, X_test_history])
+    X_train = normalize_rows(vectorizer.transform(train_df["statement"]))
+    X_valid = normalize_rows(vectorizer.transform(valid_df["statement"]))
+    X_test = normalize_rows(vectorizer.transform(test_df["statement"]))
 
     y_train = labels_to_binary(train_df["label"])
     y_valid = labels_to_binary(valid_df["label"])
@@ -272,15 +261,10 @@ def main():
 
     test_scores = model.predict_proba(X_test)
     test_loss = model.loss(test_scores, y_test)
-    test_acc_default = accuracy(test_scores, y_test, threshold=0.5)
-    test_acc_tuned = accuracy(test_scores, y_test, threshold=model.best_threshold)
+    test_acc = accuracy(test_scores, y_test)
 
     print(f"\nFinal test loss: {test_loss:.4f}")
-    print(f"Final test accuracy at 0.50 threshold: {test_acc_default * 100:.2f}%")
-    print(
-        f"Final test accuracy at validation-tuned threshold "
-        f"({model.best_threshold:.2f}): {test_acc_tuned * 100:.2f}%"
-    )
+    print(f"Final test accuracy: {test_acc * 100:.2f}%")
 
     print("\nExample predictions:")
     for index in range(5):
@@ -294,4 +278,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "predict":
+        interactive_predict()
+    else:
+        main()
