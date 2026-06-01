@@ -1,0 +1,40 @@
+export default function Header({ user, onSignOut, onHistoryToggle, historyCount }) {
+  return (
+    <header className="header">
+      <div className="header-inner">
+        <a href="/" className="header-brand">
+          <span className="header-mark">✓</span>
+          <span className="header-title">newschecker</span>
+        </a>
+
+        <div className="header-actions">
+          {user && (
+            <button className="btn-history" onClick={onHistoryToggle} id="btn-toggle-history">
+              History{historyCount > 0 && ` (${historyCount})`}
+            </button>
+          )}
+
+          <div className="auth-section">
+            {user ? (
+              <div className="user-pill">
+                {user.avatar ? (
+                  <img src={user.avatar} alt="" className="user-avatar" referrerPolicy="no-referrer" />
+                ) : (
+                  <span className="user-avatar-placeholder">
+                    {user.name?.[0]?.toUpperCase() || "?"}
+                  </span>
+                )}
+                <span className="user-name">{user.name?.split(" ")[0]}</span>
+                <button className="btn-signout" onClick={onSignOut} id="btn-signout">
+                  ×
+                </button>
+              </div>
+            ) : (
+              <div id="google-signin-btn" />
+            )}
+          </div>
+        </div>
+      </div>
+    </header>
+  );
+}

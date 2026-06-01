@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Build output
+client/dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Model data (too large for git)
+# Uncomment these if you don't want to commit the model/data:
+# ml-service/binary_truth_mlp.pkl
+# ml-service/saved_models/
+# ml-service/data/
