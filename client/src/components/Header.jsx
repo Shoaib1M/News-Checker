@@ -1,3 +1,5 @@
+import { CheckCircle2, X } from "lucide-react";
+
 export default function Header({ user, onSignOut, onHistoryToggle, historyCount, currentPage, onNavigate }) {
   const navItems = [
     { key: "", label: "Check" },
@@ -10,7 +12,7 @@ export default function Header({ user, onSignOut, onHistoryToggle, historyCount,
     <header className="header">
       <div className="header-inner">
         <a href="#/" className="header-brand" onClick={(e) => { e.preventDefault(); onNavigate(""); }}>
-          <span className="header-mark">✓</span>
+          <span className="header-mark"><CheckCircle2 size={18} /></span>
           <span className="header-title">newschecker</span>
         </a>
 
@@ -48,8 +50,8 @@ export default function Header({ user, onSignOut, onHistoryToggle, historyCount,
                   </span>
                 )}
                 <span className="user-name">{user.name?.split(" ")[0]}</span>
-                <button className="btn-signout" onClick={onSignOut} id="btn-signout">
-                  ×
+                <button className="btn-signout" onClick={onSignOut} id="btn-signout" aria-label="Sign out">
+                  <X size={14} />
                 </button>
               </div>
             ) : (

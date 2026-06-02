@@ -1,9 +1,13 @@
 import { useState } from "react";
+import {
+  Package, FileText, Brain, CheckCircle2, Globe, Target,
+  Layers, Calculator, Code2
+} from "lucide-react";
 
 const PIPELINE_STEPS = [
   {
     id: "dataset",
-    icon: "📦",
+    icon: <Package className="hiw-step-icon" />,
     title: "LIAR Dataset",
     short: "10K+ labelled political statements",
     detail: `The LIAR dataset (Wang, 2017) contains 12,836 short political statements from PolitiFact, 
@@ -19,7 +23,7 @@ Split: 10,240 training · 1,284 validation · 1,267 test samples.`,
   },
   {
     id: "features",
-    icon: "🔤",
+    icon: <FileText className="hiw-step-icon" />,
     title: "TF-IDF Vectorization",
     short: "Convert text to numerical features",
     detail: `We built a custom TF-IDF (Term Frequency–Inverse Document Frequency) vectorizer from scratch — 
@@ -35,7 +39,7 @@ min-max normalisation. The final feature vector is [TF-IDF features | history fe
   },
   {
     id: "model",
-    icon: "🧠",
+    icon: <Brain className="hiw-step-icon" />,
     title: "MLP Neural Network",
     short: "1 hidden layer, 64 neurons, ReLU + sigmoid",
     detail: `The Binary Truth MLP is a fully-connected neural network built from scratch in NumPy 
@@ -57,7 +61,7 @@ can explain every line of the training loop.`,
   },
   {
     id: "classification",
-    icon: "✅",
+    icon: <CheckCircle2 className="hiw-step-icon" />,
     title: "Binary Classification",
     short: "Fake-ish vs True-ish with tuned threshold",
     detail: `The sigmoid output gives a probability between 0 and 1. Rather than using the standard 
@@ -72,7 +76,7 @@ This tuned threshold typically lands around 0.45–0.55, and the small adjustmen
   },
   {
     id: "evidence",
-    icon: "🌐",
+    icon: <Globe className="hiw-step-icon" />,
     title: "Evidence Scraping",
     short: "Multi-source web scraping + stance detection",
     detail: `The ML model alone isn't enough — so we scrape the web in real time for corroborating or 
@@ -92,7 +96,7 @@ the net balance across all sources.`,
   },
   {
     id: "scoring",
-    icon: "🎯",
+    icon: <Target className="hiw-step-icon" />,
     title: "Combined Score",
     short: "40% ML + 35% evidence + 25% stance → 0–100",
     detail: `The final credibility score blends three signals:
@@ -149,7 +153,7 @@ export default function HowItWorks() {
               onClick={() => toggle(step.id)}
               id={`step-${step.id}`}
             >
-              <span className="hiw-step-icon">{step.icon}</span>
+              {step.icon}
               <span className="hiw-step-title">{step.title}</span>
               <span className="hiw-step-short">{step.short}</span>
               <span className="hiw-step-toggle">{expanded === step.id ? "−" : "+"}</span>
@@ -185,7 +189,7 @@ export default function HowItWorks() {
       {/* Architecture Diagram */}
       <div className="hiw-arch-card" id="architecture-diagram">
         <h3 className="eval-section-title">
-          <span className="eval-icon">🏗️</span> Neural Network Architecture
+          <Layers className="eval-icon" size={20} /> Neural Network Architecture
         </h3>
         <div className="hiw-arch-visual">
           <NeuralNetDiagram />
@@ -199,7 +203,7 @@ export default function HowItWorks() {
       {/* Scoring Formula */}
       <div className="hiw-formula-card" id="scoring-formula">
         <h3 className="eval-section-title">
-          <span className="eval-icon">📐</span> Scoring Formula
+          <Calculator className="eval-icon" size={20} /> Scoring Formula
         </h3>
         <div className="hiw-formula">
           <div className="hiw-formula-eq">
@@ -240,13 +244,13 @@ export default function HowItWorks() {
       {/* Tech Stack */}
       <div className="hiw-tech-card" id="tech-stack">
         <h3 className="eval-section-title">
-          <span className="eval-icon">🛠️</span> Tech Stack
+          <Code2 className="eval-icon" size={20} /> Tech Stack
         </h3>
         <div className="hiw-tech-grid">
           {[
             { label: "ML / Data", items: ["Python", "NumPy", "Pandas", "Custom TF-IDF"] },
             { label: "Backend", items: ["FastAPI", "Node.js / Express", "MongoDB"] },
-            { label: "Frontend", items: ["React (Vite)", "Vanilla CSS", "Custom SVG Charts"] },
+            { label: "Frontend", items: ["React (Vite)", "Vanilla CSS", "Lucide Icons"] },
             { label: "APIs", items: ["DuckDuckGo", "GNews", "NewsAPI", "The Guardian"] },
           ].map((group) => (
             <div className="hiw-tech-group" key={group.label}>
@@ -298,7 +302,7 @@ function NeuralNetDiagram() {
             x1={inp.x + 20} y1={inp.y}
             x2={hid.x - 20} y2={hid.y}
             className="hiw-nn-conn"
-            style={{ opacity: 0.12 + Math.random() * 0.18 }}
+            style={{ opacity: 0.25 + Math.random() * 0.3 }}
           />
         ))
       )}
@@ -311,7 +315,7 @@ function NeuralNetDiagram() {
             x1={hid.x + 20} y1={hid.y}
             x2={out.x - 20} y2={out.y}
             className="hiw-nn-conn hiw-nn-conn-out"
-            style={{ opacity: 0.2 + Math.random() * 0.2 }}
+            style={{ opacity: 0.4 + Math.random() * 0.3 }}
           />
         ))
       )}

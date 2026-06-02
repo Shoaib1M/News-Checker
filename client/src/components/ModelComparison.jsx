@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Trophy, Target, FlaskConical, Activity, Scale, Lightbulb, Brain, Settings2, Link, Spline } from "lucide-react";
 
 export default function ModelComparison() {
   const [data, setData] = useState(null);
@@ -35,28 +36,28 @@ export default function ModelComparison() {
       lr: lr.accuracy,
       mlp6: mlp6.accuracy,
       bt: bt.accuracy,
-      icon: "🎯",
+      icon: <Target size={16} />,
     },
     {
       label: "Precision",
       lr: lr.precision,
       mlp6: mlp6.precision,
       bt: bt.precision,
-      icon: "🔬",
+      icon: <FlaskConical size={16} />,
     },
     {
       label: "Recall",
       lr: lr.recall,
       mlp6: mlp6.recall,
       bt: bt.recall,
-      icon: "📡",
+      icon: <Activity size={16} />,
     },
     {
       label: "F1 Score",
       lr: lr.f1,
       mlp6: mlp6.f1,
       bt: bt.f1,
-      icon: "⚖️",
+      icon: <Scale size={16} />,
     },
   ];
 
@@ -80,7 +81,7 @@ export default function ModelComparison() {
 
       {/* Winner banner */}
       <div className="comp-winner-banner" id="winner-banner">
-        <div className="comp-winner-icon">🏆</div>
+        <div className="comp-winner-icon"><Trophy size={28} color="var(--purple)" /></div>
         <div className="comp-winner-text">
           <strong>Binary Truth MLP</strong> outperforms Logistic Regression by{" "}
           <span className="comp-winner-delta">
@@ -105,9 +106,9 @@ export default function ModelComparison() {
                 <span className="comp-model-sub">Fine-grained</span>
               </th>
               <th className="comp-th-model comp-th-winner">
-                <span className="comp-model-name">
+                <span className="comp-model-name" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}>
                   Binary Truth MLP
-                  <span className="comp-star">★</span>
+                  <span className="comp-star" style={{ display: 'flex' }}><Trophy size={14} /></span>
                 </span>
                 <span className="comp-model-sub">Production</span>
               </th>
@@ -164,11 +165,11 @@ export default function ModelComparison() {
       {/* Why Binary MLP */}
       <div className="comp-why-card" id="why-binary-mlp">
         <h3 className="eval-section-title">
-          <span className="eval-icon">💡</span> Why Binary Truth MLP?
+          <Lightbulb className="eval-icon" size={20} /> Why Binary Truth MLP?
         </h3>
         <div className="comp-why-grid">
           <div className="comp-why-item">
-            <div className="comp-why-icon">🧠</div>
+            <div className="comp-why-icon"><Brain size={24} color="var(--purple)" /></div>
             <h4>Richer Features</h4>
             <p>
               Unlike the other two models that only use statement text,
@@ -177,7 +178,7 @@ export default function ModelComparison() {
             </p>
           </div>
           <div className="comp-why-item">
-            <div className="comp-why-icon">🎯</div>
+            <div className="comp-why-icon"><Settings2 size={24} color="var(--purple)" /></div>
             <h4>Tuned Threshold</h4>
             <p>
               Instead of a fixed 0.5 cutoff, the threshold is optimised on the
@@ -186,7 +187,7 @@ export default function ModelComparison() {
             </p>
           </div>
           <div className="comp-why-item">
-            <div className="comp-why-icon">🔗</div>
+            <div className="comp-why-icon"><Link size={24} color="var(--purple)" /></div>
             <h4>Evidence Integration</h4>
             <p>
               The production system doesn't rely on the model alone.
@@ -195,7 +196,7 @@ export default function ModelComparison() {
             </p>
           </div>
           <div className="comp-why-item">
-            <div className="comp-why-icon">📐</div>
+            <div className="comp-why-icon"><Spline size={24} color="var(--purple)" /></div>
             <h4>Binary is Practical</h4>
             <p>
               End users want "true or false", not six fine-grained labels.

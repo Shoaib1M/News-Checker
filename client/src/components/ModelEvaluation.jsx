@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Database, Grid2x2, TrendingUp, List, Settings } from "lucide-react";
 
 export default function ModelEvaluation() {
   const [data, setData] = useState(null);
@@ -40,7 +41,7 @@ export default function ModelEvaluation() {
       {/* Dataset Overview */}
       <div className="eval-dataset-card" id="dataset-overview">
         <h3 className="eval-section-title">
-          <span className="eval-icon">📊</span> Dataset: {dataset.name}
+          <Database className="eval-icon" size={20} /> Dataset: {dataset.name}
         </h3>
         <div className="eval-dataset-grid">
           <div className="eval-dataset-stat">
@@ -108,7 +109,7 @@ export default function ModelEvaluation() {
         <div className="eval-chart-card" id="confusion-matrix">
           <div className="eval-chart-header">
             <h3 className="eval-section-title">
-              <span className="eval-icon">🔢</span> Confusion Matrix
+              <Grid2x2 className="eval-icon" size={20} /> Confusion Matrix
             </h3>
             <div className="eval-cm-toggle">
               {Object.entries(models).map(([key, m]) => (
@@ -132,7 +133,7 @@ export default function ModelEvaluation() {
         {model.roc_curve && (
           <div className="eval-chart-card" id="roc-curve">
             <h3 className="eval-section-title">
-              <span className="eval-icon">📈</span> ROC Curve
+              <TrendingUp className="eval-icon" size={20} /> ROC Curve
               <span className="eval-auc-badge">AUC = {model.auc}</span>
             </h3>
             <ROCCurve points={model.roc_curve} auc={model.auc} />
@@ -150,7 +151,7 @@ export default function ModelEvaluation() {
       {model.per_class_metrics && (
         <div className="eval-chart-card eval-full-width" id="per-class-metrics">
           <h3 className="eval-section-title">
-            <span className="eval-icon">📋</span> Per-Class Metrics
+            <List className="eval-icon" size={20} /> Per-Class Metrics
           </h3>
           <div className="eval-per-class-table">
             <div className="eval-pc-header">
@@ -176,7 +177,7 @@ export default function ModelEvaluation() {
       {/* Model details */}
       <div className="eval-chart-card eval-full-width" id="model-details">
         <h3 className="eval-section-title">
-          <span className="eval-icon">⚙️</span> Model Details — {model.name}
+          <Settings className="eval-icon" size={20} /> Model Details — {model.name}
         </h3>
         <div className="eval-details-grid">
           <div className="eval-detail-item">

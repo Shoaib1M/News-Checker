@@ -991,28 +991,28 @@
 }
 
 .eval-cm-corner {
-  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.3rem;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0.5rem;
+  background: var(--gray-50);
+  border-radius: 6px;
+  border: 1px solid var(--gray-200);
 }
 
 .eval-cm-axis-label {
-  font-size: 0.6rem;
-  color: var(--gray-400);
-  font-weight: 600;
+  font-size: 0.65rem;
+  color: var(--gray-500);
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  position: absolute;
+  letter-spacing: 0.04em;
 }
 .eval-cm-axis-pred {
-  bottom: 2px;
-  right: 2px;
+  align-self: flex-end;
+  color: var(--gray-800);
 }
 .eval-cm-axis-actual {
-  top: 2px;
-  left: 2px;
+  align-self: flex-start;
 }
 
 .eval-cm-col-label,
@@ -1465,7 +1465,7 @@
 
 .hiw-step-wrapper {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   animation: fadeUp 0.4s ease-out both;
 }
 
@@ -1500,7 +1500,7 @@
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s;
-  min-width: 100px;
+  min-width: 110px;
   max-width: 135px;
   text-align: center;
   position: relative;
