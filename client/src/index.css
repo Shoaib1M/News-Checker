@@ -24,6 +24,10 @@
   --red-bg: #fef2f2;
   --amber: #d97706;
   --amber-bg: #fffbeb;
+  --blue: #2563eb;
+  --blue-light: #dbeafe;
+  --blue-bg: #eff6ff;
+  --cyan: #0891b2;
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 

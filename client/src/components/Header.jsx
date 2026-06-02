@@ -1,11 +1,34 @@
-export default function Header({ user, onSignOut, onHistoryToggle, historyCount }) {
+export default function Header({ user, onSignOut, onHistoryToggle, historyCount, currentPage, onNavigate }) {
+  const navItems = [
+    { key: "", label: "Check" },
+    { key: "evaluation", label: "Evaluation" },
+    { key: "comparison", label: "Comparison" },
+    { key: "how-it-works", label: "How It Works" },
+  ];
+
   return (
     <header className="header">
       <div className="header-inner">
-        <a href="/" className="header-brand">
+        <a href="#/" className="header-brand" onClick={(e) => { e.preventDefault(); onNavigate(""); }}>
           <span className="header-mark">✓</span>
           <span className="header-title">newschecker</span>
         </a>
+
+        <nav className="header-nav">
+          {navItems.map((item) => (
+            <a
+              key={item.key}
+              href={`#/${item.key}`}
+              className={`header-nav-link ${currentPage === item.key ? "active" : ""}`}
+              onClick={(e) => {
+                e.preventDefault();
+                onNavigate(item.key);
+              }}
+            >
+              {item.label}
+            </a>
+          ))}
+        </nav>
 
         <div className="header-actions">
           {user && (

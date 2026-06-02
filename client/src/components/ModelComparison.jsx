@@ -1,0 +1,210 @@
+import { useState, useEffect } from "react";
+
+export default function ModelComparison() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    fetch("/evaluation_results.json")
+      .then((res) => res.json())
+      .then(setData)
+      .catch((err) => console.error("Failed to load evaluation data:", err));
+  }, []);
+
+  if (!data) {
+    return (
+      <div className="eval-loading">
+        <div className="spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
+        <p>Loading comparison data…</p>
+      </div>
+    );
+  }
+
+  const { models } = data;
+  const lr = models.logistic_regression;
+  const mlp6 = models.mlp_6class;
+  const bt = models.binary_mlp;
+
+  const delta = (a, b) => {
+    const diff = ((a - b) * 100).toFixed(1);
+    return diff > 0 ? `+${diff}` : diff;
+  };
+
+  const metricsRows = [
+    {
+      label: "Accuracy",
+      lr: lr.accuracy,
+      mlp6: mlp6.accuracy,
+      bt: bt.accuracy,
+      icon: "🎯",
+    },
+    {
+      label: "Precision",
+      lr: lr.precision,
+      mlp6: mlp6.precision,
+      bt: bt.precision,
+      icon: "🔬",
+    },
+    {
+      label: "Recall",
+      lr: lr.recall,
+      mlp6: mlp6.recall,
+      bt: bt.recall,
+      icon: "📡",
+    },
+    {
+      label: "F1 Score",
+      lr: lr.f1,
+      mlp6: mlp6.f1,
+      bt: bt.f1,
+      icon: "⚖️",
+    },
+  ];
+
+  const detailRows = [
+    { label: "Architecture", lr: lr.architecture, mlp6: mlp6.architecture, bt: bt.architecture },
+    { label: "Input Features", lr: lr.input_features, mlp6: mlp6.input_features, bt: bt.input_features },
+    { label: "Training", lr: lr.training, mlp6: mlp6.training, bt: bt.training },
+    { label: "Output Classes", lr: lr.classes, mlp6: mlp6.classes, bt: bt.classes },
+  ];
+
+  return (
+    <div className="comp-page">
+      <section className="intro" style={{ animationDelay: "0s" }}>
+        <p className="intro-tag">Side-by-Side · All models trained on LIAR</p>
+        <h2 className="intro-heading">Model Comparison</h2>
+        <p className="intro-desc">
+          Three models, one dataset. Here's how they stack up — and why
+          the Binary Truth MLP is the one powering the app.
+        </p>
+      </section>
+
+      {/* Winner banner */}
+      <div className="comp-winner-banner" id="winner-banner">
+        <div className="comp-winner-icon">🏆</div>
+        <div className="comp-winner-text">
+          <strong>Binary Truth MLP</strong> outperforms Logistic Regression by{" "}
+          <span className="comp-winner-delta">
+            {delta(bt.accuracy, lr.accuracy)}%
+          </span>{" "}
+          accuracy and achieves an AUC of <strong>{bt.auc}</strong>
+        </div>
+      </div>
+
+      {/* Comparison Table */}
+      <div className="comp-table-wrapper" id="comparison-table">
+        <table className="comp-table">
+          <thead>
+            <tr>
+              <th className="comp-th-metric">Metric</th>
+              <th className="comp-th-model">
+                <span className="comp-model-name">Logistic Regression</span>
+                <span className="comp-model-sub">Baseline</span>
+              </th>
+              <th className="comp-th-model">
+                <span className="comp-model-name">MLP 6-Class</span>
+                <span className="comp-model-sub">Fine-grained</span>
+              </th>
+              <th className="comp-th-model comp-th-winner">
+                <span className="comp-model-name">
+                  Binary Truth MLP
+                  <span className="comp-star">★</span>
+                </span>
+                <span className="comp-model-sub">Production</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {/* Metric rows */}
+            {metricsRows.map((row, i) => {
+              const values = [row.lr, row.mlp6, row.bt];
+              const best = Math.max(...values);
+
+              return (
+                <tr key={row.label} className="comp-metric-row" style={{ animationDelay: `${i * 0.06}s` }}>
+                  <td className="comp-td-label">
+                    <span className="comp-row-icon">{row.icon}</span>
+                    {row.label}
+                  </td>
+                  {[row.lr, row.mlp6, row.bt].map((val, j) => (
+                    <td
+                      key={j}
+                      className={`comp-td-value ${val === best ? "comp-td-best" : ""} ${j === 2 ? "comp-td-winner-col" : ""}`}
+                    >
+                      <span className="comp-value">{(val * 100).toFixed(1)}%</span>
+                      {j > 0 && (
+                        <span className={`comp-delta ${val >= row.lr ? "comp-delta-up" : "comp-delta-down"}`}>
+                          {val >= row.lr ? "↑" : "↓"} {Math.abs(((val - row.lr) * 100)).toFixed(1)}%
+                        </span>
+                      )}
+                      {val === best && <span className="comp-best-dot" />}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+
+            {/* Separator */}
+            <tr className="comp-separator">
+              <td colSpan={4}><div className="comp-sep-line" /></td>
+            </tr>
+
+            {/* Detail rows */}
+            {detailRows.map((row, i) => (
+              <tr key={row.label} className="comp-detail-row" style={{ animationDelay: `${(metricsRows.length + i) * 0.06}s` }}>
+                <td className="comp-td-label comp-td-label-detail">{row.label}</td>
+                <td className="comp-td-detail">{row.lr}</td>
+                <td className="comp-td-detail">{row.mlp6}</td>
+                <td className="comp-td-detail comp-td-winner-col">{row.bt}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Why Binary MLP */}
+      <div className="comp-why-card" id="why-binary-mlp">
+        <h3 className="eval-section-title">
+          <span className="eval-icon">💡</span> Why Binary Truth MLP?
+        </h3>
+        <div className="comp-why-grid">
+          <div className="comp-why-item">
+            <div className="comp-why-icon">🧠</div>
+            <h4>Richer Features</h4>
+            <p>
+              Unlike the other two models that only use statement text,
+              the Binary MLP combines TF-IDF with speaker metadata, party, job title,
+              state, and the speaker's historical truthfulness scores.
+            </p>
+          </div>
+          <div className="comp-why-item">
+            <div className="comp-why-icon">🎯</div>
+            <h4>Tuned Threshold</h4>
+            <p>
+              Instead of a fixed 0.5 cutoff, the threshold is optimised on the
+              validation set to maximise accuracy — currently set at{" "}
+              <strong>{bt.threshold}</strong>.
+            </p>
+          </div>
+          <div className="comp-why-item">
+            <div className="comp-why-icon">🔗</div>
+            <h4>Evidence Integration</h4>
+            <p>
+              The production system doesn't rely on the model alone.
+              Web evidence is scraped in real-time and combined with the ML score
+              (40% ML + 35% evidence + 25% stance) for a final credibility score.
+            </p>
+          </div>
+          <div className="comp-why-item">
+            <div className="comp-why-icon">📐</div>
+            <h4>Binary is Practical</h4>
+            <p>
+              End users want "true or false", not six fine-grained labels.
+              Collapsing to binary also gives us more training samples per class,
+              reducing overfitting on the small LIAR dataset.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -6,10 +6,38 @@ import ScoreBreakdown from "./components/ScoreBreakdown";
 import EvidenceCard from "./components/EvidenceCard";
 import LoadingSkeleton from "./components/LoadingSkeleton";
 import HistoryPanel from "./components/HistoryPanel";
+import ModelEvaluation from "./components/ModelEvaluation";
+import ModelComparison from "./components/ModelComparison";
+import HowItWorks from "./components/HowItWorks";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+// ─── Hash Router ────────────────────────────────────────────────────
+function useHashRouter() {
+  const getPage = () => {
+    const hash = window.location.hash.replace("#/", "").replace("#", "");
+    return hash || "";
+  };
+
+  const [page, setPage] = useState(getPage);
+
+  useEffect(() => {
+    const handler = () => setPage(getPage());
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
+  }, []);
+
+  const navigate = (p) => {
+    window.location.hash = `#/${p}`;
+    setPage(p);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  return [page, navigate];
+}
+
 function App() {
+  const [page, navigate] = useHashRouter();
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(() => localStorage.getItem("nc_token"));
   const [statement, setStatement] = useState("");
@@ -188,6 +216,123 @@ function App() {
     }
   };
 
+  // ─── Route-based rendering ──────────────────────────────────────────
+  const renderPage = () => {
+    switch (page) {
+      case "evaluation":
+        return <ModelEvaluation />;
+      case "comparison":
+        return <ModelComparison />;
+      case "how-it-works":
+        return <HowItWorks />;
+      default:
+        return renderHome();
+    }
+  };
+
+  const renderHome = () => (
+    <>
+      {/* Intro */}
+      <section className="intro">
+        <p className="intro-tag">Built on the LIAR dataset · MLP + live web evidence</p>
+        <h2 className="intro-heading">
+          Paste a claim. I'll tell you if it holds up.
+        </h2>
+        <p className="intro-desc">
+          My model scores the statement, then I scrape the web for supporting
+          or contradicting evidence and combine both into a single credibility score.
+        </p>
+      </section>
+
+      {/* Input */}
+      <form className="input-card" onSubmit={handleSubmit} id="check-form">
+        <textarea
+          id="statement-input"
+          ref={textareaRef}
+          className="input-textarea"
+          placeholder="e.g. The United States spends more on its military than the next 10 countries combined."
+          value={statement}
+          onChange={(e) => setStatement(e.target.value)}
+          maxLength={2000}
+          disabled={loading}
+        />
+        <div className="input-footer">
+          <span className="char-count">{statement.length}/2000</span>
+          <button
+            type="submit"
+            className="btn-check"
+            disabled={loading || statement.trim().length < 5}
+            id="btn-check"
+          >
+            {loading ? (
+              <>
+                <span className="spinner" />
+                Checking…
+              </>
+            ) : (
+              "Check this"
+            )}
+          </button>
+        </div>
+      </form>
+
+      {/* Error */}
+      {error && (
+        <div className="error-banner" id="error-message">
+          {error}
+        </div>
+      )}
+
+      {/* Loading */}
+      {loading && <LoadingSkeleton />}
+
+      {/* Results */}
+      {result && !loading && (
+        <section className="results" id="results-section">
+          <div className="results-label">
+            <span>Result</span>
+            {result.processing_time_seconds && (
+              <span className="results-time">{result.processing_time_seconds}s</span>
+            )}
+          </div>
+
+          <div className="score-card">
+            <ScoreGauge
+              score={result.combined_score}
+              verdict={result.combined_verdict}
+            />
+            <div className="score-details">
+              <p className="verdict-text" data-score={result.combined_score}>
+                {result.combined_verdict}
+              </p>
+              <p className="verdict-statement">
+                "{result.statement}"
+              </p>
+              <ScoreBreakdown
+                mlScore={result.ml_score}
+                evidenceScore={result.evidence_score}
+                stanceNet={result.evidence_stance?.net || 0}
+              />
+            </div>
+          </div>
+
+          {result.top_evidence && result.top_evidence.length > 0 && (
+            <div className="evidence-section" id="evidence-section">
+              <p className="section-label">
+                Sources found — {result.top_evidence.length} articles
+              </p>
+              <div className="evidence-grid">
+                {result.top_evidence.map((ev, i) => (
+                  <EvidenceCard key={ev.url || i} evidence={ev} index={i} />
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+    </>
+  );
+
   return (
     <div className="app-layout">
       <Header
@@ -195,107 +340,12 @@ function App() {
         onSignOut={handleSignOut}
         onHistoryToggle={() => setHistoryOpen(!historyOpen)}
         historyCount={history.length}
+        currentPage={page}
+        onNavigate={navigate}
       />
 
       <main className="app-main">
-        {/* Intro */}
-        <section className="intro">
-          <p className="intro-tag">Built on the LIAR dataset · MLP + live web evidence</p>
-          <h2 className="intro-heading">
-            Paste a claim. I'll tell you if it holds up.
-          </h2>
-          <p className="intro-desc">
-            My model scores the statement, then I scrape the web for supporting
-            or contradicting evidence and combine both into a single credibility score.
-          </p>
-        </section>
-
-        {/* Input */}
-        <form className="input-card" onSubmit={handleSubmit} id="check-form">
-          <textarea
-            id="statement-input"
-            ref={textareaRef}
-            className="input-textarea"
-            placeholder="e.g. The United States spends more on its military than the next 10 countries combined."
-            value={statement}
-            onChange={(e) => setStatement(e.target.value)}
-            maxLength={2000}
-            disabled={loading}
-          />
-          <div className="input-footer">
-            <span className="char-count">{statement.length}/2000</span>
-            <button
-              type="submit"
-              className="btn-check"
-              disabled={loading || statement.trim().length < 5}
-              id="btn-check"
-            >
-              {loading ? (
-                <>
-                  <span className="spinner" />
-                  Checking…
-                </>
-              ) : (
-                "Check this"
-              )}
-            </button>
-          </div>
-        </form>
-
-        {/* Error */}
-        {error && (
-          <div className="error-banner" id="error-message">
-            {error}
-          </div>
-        )}
-
-        {/* Loading */}
-        {loading && <LoadingSkeleton />}
-
-        {/* Results */}
-        {result && !loading && (
-          <section className="results" id="results-section">
-            <div className="results-label">
-              <span>Result</span>
-              {result.processing_time_seconds && (
-                <span className="results-time">{result.processing_time_seconds}s</span>
-              )}
-            </div>
-
-            <div className="score-card">
-              <ScoreGauge
-                score={result.combined_score}
-                verdict={result.combined_verdict}
-              />
-              <div className="score-details">
-                <p className="verdict-text" data-score={result.combined_score}>
-                  {result.combined_verdict}
-                </p>
-                <p className="verdict-statement">
-                  "{result.statement}"
-                </p>
-                <ScoreBreakdown
-                  mlScore={result.ml_score}
-                  evidenceScore={result.evidence_score}
-                  stanceNet={result.evidence_stance?.net || 0}
-                />
-              </div>
-            </div>
-
-            {result.top_evidence && result.top_evidence.length > 0 && (
-              <div className="evidence-section" id="evidence-section">
-                <p className="section-label">
-                  Sources found — {result.top_evidence.length} articles
-                </p>
-                <div className="evidence-grid">
-                  {result.top_evidence.map((ev, i) => (
-                    <EvidenceCard key={ev.url || i} evidence={ev} index={i} />
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-        )}
+        {renderPage()}
       </main>
 
       <footer className="app-footer">
