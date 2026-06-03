@@ -1,3 +1,22 @@
+/*
+FILE PURPOSE:
+A slide-out sidebar that shows the user's previously checked statements.
+
+FLOW:
+1. Renders a dark overlay behind the panel (clicking it closes the panel).
+2. Displays a list of history items, mapping over the array passed from `App.jsx`.
+3. If clicked, triggers `onSelect` to load that check back into the main view.
+4. If the trash can is clicked, triggers `onDelete`.
+
+WHY THIS EXISTS:
+Allows logged-in users to revisit their past fact-checks without having to run the 
+expensive ML and scraping pipeline again.
+*/
+
+/*
+PURPOSE: Assigns a background color based on the final score (Red for low, Green for high).
+WHY THIS EXISTS: Visual cues help users scan their history quickly.
+*/
 function getScoreColor(score) {
   if (score <= 25) return { bg: "#fef2f2", color: "#ef4444" };
   if (score <= 40) return { bg: "#fff7ed", color: "#f97316" };
@@ -6,6 +25,9 @@ function getScoreColor(score) {
   return { bg: "#ecfdf5", color: "#059669" };
 }
 
+/*
+PURPOSE: Converts a raw database timestamp into a friendly relative time (e.g., "5m ago").
+*/
 function formatTime(dateString) {
   const date = new Date(dateString);
   const now = new Date();
@@ -21,13 +43,16 @@ function formatTime(dateString) {
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays < 7) return `${diffDays}d ago`;
 
+  // If it's more than a week old, just show the date (e.g., "Jan 12")
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
   return (
     <>
+      {/* The dark, semi-transparent background. Clicking it closes the panel. */}
       <div className="history-overlay" onClick={onClose} />
+      
       <div className="history-panel" id="history-panel">
         <div className="history-header">
           <h3>Check History</h3>
@@ -40,6 +65,7 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
         </div>
 
         <div className="history-list">
+          {/* Empty State */}
           {history.length === 0 ? (
             <div className="history-empty">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -50,6 +76,7 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
               <p>Your checked statements will appear here.</p>
             </div>
           ) : (
+            /* Filled State */
             history.map((item) => {
               const colors = getScoreColor(item.combinedScore);
               return (
@@ -70,10 +97,12 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
                       {item.combinedVerdict} · {formatTime(item.createdAt)}
                     </div>
                   </div>
+                  
+                  {/* Delete Button */}
                   <button
                     className="history-delete"
                     onClick={(e) => {
-                      e.stopPropagation();
+                      e.stopPropagation(); // Stop the click from also triggering onSelect
                       onDelete(item._id);
                     }}
                     title="Delete"

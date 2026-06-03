@@ -1,9 +1,27 @@
+/*
+FILE PURPOSE:
+An interactive "How it Works" page that acts as a technical blog post or whitepaper.
+It explains the entire pipeline from Dataset -> TF-IDF -> Neural Net -> Evidence Scraping -> Scoring.
+
+FLOW:
+1. Defines the pipeline steps in a large data array (`PIPELINE_STEPS`).
+2. Renders the interactive step buttons (Accordion UI).
+3. Conditionally renders the detail panel when a step is clicked.
+4. Renders a custom SVG architecture diagram of the Neural Network.
+5. Explains the final mathematical scoring formula.
+
+WHY THIS EXISTS:
+This serves as the "Documentation" for the project, directly integrated into the app.
+It shows employers or users exactly how much thought went into the system's design.
+*/
+
 import { useState } from "react";
 import {
   Package, FileText, Brain, CheckCircle2, Globe, Target,
   Layers, Calculator, Code2
 } from "lucide-react";
 
+// The raw data for our interactive "Pipeline" accordion
 const PIPELINE_STEPS = [
   {
     id: "dataset",
@@ -123,6 +141,7 @@ supporting the claim can push the score up — and vice versa.`,
 export default function HowItWorks() {
   const [expanded, setExpanded] = useState(null);
 
+  // Expands or collapses a pipeline step
   const toggle = (id) => setExpanded(expanded === id ? null : id);
 
   return (
@@ -136,10 +155,12 @@ export default function HowItWorks() {
         </p>
       </section>
 
-      {/* Visual Pipeline */}
+      {/* Visual Pipeline (The clickable buttons) */}
       <div className="hiw-pipeline" id="pipeline-diagram">
         {PIPELINE_STEPS.map((step, i) => (
           <div key={step.id} className="hiw-step-wrapper" style={{ animationDelay: `${i * 0.08}s` }}>
+            
+            {/* Draw a connecting arrow between steps */}
             {i > 0 && (
               <div className="hiw-arrow">
                 <svg viewBox="0 0 40 20" className="hiw-arrow-svg">
@@ -148,6 +169,7 @@ export default function HowItWorks() {
                 </svg>
               </div>
             )}
+
             <button
               className={`hiw-step-card ${expanded === step.id ? "hiw-step-expanded" : ""}`}
               onClick={() => toggle(step.id)}
@@ -162,7 +184,7 @@ export default function HowItWorks() {
         ))}
       </div>
 
-      {/* Expanded detail panel */}
+      {/* Expanded detail panel (Shows the long text when a button is clicked) */}
       {expanded && (
         <div className="hiw-detail-panel" id="detail-panel">
           <div className="hiw-detail-header">
@@ -172,11 +194,13 @@ export default function HowItWorks() {
             <h3>{PIPELINE_STEPS.find((s) => s.id === expanded)?.title}</h3>
           </div>
           <div className="hiw-detail-body">
+            {/* Split the detail text by newlines and render proper HTML tags */}
             {PIPELINE_STEPS.find((s) => s.id === expanded)?.detail
               .split("\n")
               .map((line, i) => {
                 const trimmed = line.trim();
                 if (!trimmed) return <br key={i} />;
+                // Automatically turn bullet points into <li> tags
                 if (trimmed.startsWith("•")) {
                   return <li key={i}>{trimmed.slice(1).trim()}</li>;
                 }
@@ -271,14 +295,21 @@ export default function HowItWorks() {
 
 // ─── Neural Net Diagram ─────────────────────────────────────────────
 
+/*
+PURPOSE: Manually draws the nodes and connecting lines of our neural network.
+WHY THIS EXISTS: Showing the specific architecture helps viewers understand the complexity.
+*/
 function NeuralNetDiagram() {
   const inputCount = 5;
   const hiddenCount = 6;
   const outputCount = 1;
   const width = 500;
   const height = 280;
+  
+  // The horizontal (X) positions of our three layers
   const layerX = [80, 250, 420];
 
+  // Helper function to generate an array of Y coordinates for a given layer
   const makeNodes = (count, x, startY, gap) =>
     Array.from({ length: count }, (_, i) => ({
       x,
@@ -294,7 +325,8 @@ function NeuralNetDiagram() {
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="hiw-nn-svg">
-      {/* Connections: input → hidden */}
+      
+      {/* Connections: Input Layer → Hidden Layer */}
       {inputNodes.map((inp, i) =>
         hiddenNodes.map((hid, j) => (
           <line
@@ -302,12 +334,13 @@ function NeuralNetDiagram() {
             x1={inp.x + 20} y1={inp.y}
             x2={hid.x - 20} y2={hid.y}
             className="hiw-nn-conn"
+            // Random opacity makes the web of connections look more organic
             style={{ opacity: 0.25 + Math.random() * 0.3 }}
           />
         ))
       )}
 
-      {/* Connections: hidden → output */}
+      {/* Connections: Hidden Layer → Output Node */}
       {hiddenNodes.map((hid, i) =>
         outputNodes.map((out, j) => (
           <line
@@ -320,7 +353,7 @@ function NeuralNetDiagram() {
         ))
       )}
 
-      {/* Input nodes */}
+      {/* Draw Input nodes (Circles + Text) */}
       {inputNodes.map((node, i) => (
         <g key={`in-${i}`}>
           <circle cx={node.x} cy={node.y} r={16} className="hiw-nn-node hiw-nn-input" />
@@ -328,7 +361,7 @@ function NeuralNetDiagram() {
         </g>
       ))}
 
-      {/* Hidden nodes */}
+      {/* Draw Hidden nodes */}
       {hiddenNodes.map((node, i) => (
         <g key={`hid-${i}`}>
           <circle cx={node.x} cy={node.y} r={16} className="hiw-nn-node hiw-nn-hidden" />
@@ -336,7 +369,7 @@ function NeuralNetDiagram() {
         </g>
       ))}
 
-      {/* Output node */}
+      {/* Draw Output node */}
       {outputNodes.map((node, i) => (
         <g key={`out-${i}`}>
           <circle cx={node.x} cy={node.y} r={20} className="hiw-nn-node hiw-nn-output" />
@@ -344,7 +377,7 @@ function NeuralNetDiagram() {
         </g>
       ))}
 
-      {/* Layer labels */}
+      {/* Layer labels at the bottom */}
       <text x={layerX[0]} y={height - 5} className="hiw-nn-layer-label">Input Layer</text>
       <text x={layerX[1]} y={height - 5} className="hiw-nn-layer-label">Hidden (64, ReLU)</text>
       <text x={layerX[2]} y={height - 5} className="hiw-nn-layer-label">Output (σ)</text>

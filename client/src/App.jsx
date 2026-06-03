@@ -1,5 +1,24 @@
+/*
+FILE PURPOSE:
+This is the root component of the entire React Frontend.
+It holds the main application state (user, token, the statement being checked, results, and history).
+It also acts as the central router, deciding which page or component to show.
+
+FLOW:
+1. useHashRouter: Manages simple navigation without needing a complex library like React Router.
+2. User Session: Checks if the user is logged in via Google OAuth.
+3. API Calls: Handles sending statements to the backend and fetching history.
+4. Render: Displays the Header, the main content (Home, Evaluation, Comparison, etc.), and the Footer.
+
+WHY THIS EXISTS:
+We need a central "brain" for the frontend to manage the state that is shared across multiple components
+(e.g., the Header needs to know if the user is logged in, and the Home page needs to know the check results).
+*/
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import "./App.css";
+
+// Import all the modular UI pieces (components)
 import Header from "./components/Header";
 import ScoreGauge from "./components/ScoreGauge";
 import ScoreBreakdown from "./components/ScoreBreakdown";
@@ -10,9 +29,15 @@ import ModelEvaluation from "./components/ModelEvaluation";
 import ModelComparison from "./components/ModelComparison";
 import HowItWorks from "./components/HowItWorks";
 
+// The backend API URL (e.g., http://localhost:3000)
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
 // ─── Hash Router ────────────────────────────────────────────────────
+/*
+PURPOSE: A custom, lightweight router using the URL hash (e.g., #/how-it-works).
+WHY THIS EXISTS: Keeps the URL updated and allows users to use the Back button, 
+without needing a heavy third-party library like `react-router-dom` for a simple app.
+*/
 function useHashRouter() {
   const getPage = () => {
     const hash = window.location.hash.replace("#/", "").replace("#", "");
@@ -37,18 +62,32 @@ function useHashRouter() {
 }
 
 function App() {
+  // ─── STATE MANAGEMENT ────────────────────────────────────────────────
+
+  // Router state
   const [page, navigate] = useHashRouter();
+  
+  // Auth state
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(() => localStorage.getItem("nc_token"));
+  
+  // Fact-check state
   const [statement, setStatement] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  
+  // History state
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState([]);
+  
   const textareaRef = useRef(null);
 
   // ─── Restore user session ───────────────────────────────────────────
+  /*
+  PURPOSE: Automatically logs the user back in if they refresh the page.
+  It sends their saved token to the backend to verify it's still valid.
+  */
   useEffect(() => {
     if (!token) return;
     fetch(`${API_BASE}/api/auth/me`, {
@@ -60,6 +99,7 @@ function App() {
       })
       .then(setUser)
       .catch(() => {
+        // If the token is invalid (expired/tampered), clear it out
         localStorage.removeItem("nc_token");
         setToken(null);
         setUser(null);
@@ -67,16 +107,25 @@ function App() {
   }, [token]);
 
   // ─── Initialize Google Sign-In ──────────────────────────────────────
+  /*
+  PURPOSE: Loads the official Google Sign-In button.
+  WHY THIS EXISTS: We don't want to manage passwords ourselves. 
+  Google handles the security and just gives us a verified token.
+  */
   useEffect(() => {
     if (user) return;
     const initGsi = () => {
       if (!window.google?.accounts?.id) return;
       const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
       if (!clientId) return;
+      
+      // Tell Google what to do when the user successfully logs in
       window.google.accounts.id.initialize({
         client_id: clientId,
         callback: handleGoogleCredential,
       });
+      
+      // Draw the actual button inside our HTML container
       const btnContainer = document.getElementById("google-signin-btn");
       if (btnContainer) {
         window.google.accounts.id.renderButton(btnContainer, {
@@ -87,6 +136,8 @@ function App() {
         });
       }
     };
+    
+    // Wait until Google's external script has finished loading
     if (window.google?.accounts?.id) {
       initGsi();
     } else {
@@ -100,6 +151,9 @@ function App() {
     }
   }, [user]);
 
+  /*
+  PURPOSE: Takes the Google token and exchanges it for OUR backend token.
+  */
   const handleGoogleCredential = async (response) => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/google`, {
@@ -109,6 +163,8 @@ function App() {
       });
       if (!res.ok) throw new Error("Auth failed");
       const data = await res.json();
+      
+      // Save our custom JWT to localStorage so they stay logged in
       localStorage.setItem("nc_token", data.token);
       setToken(data.token);
       setUser(data.user);
@@ -129,6 +185,9 @@ function App() {
   };
 
   // ─── Fetch history ──────────────────────────────────────────────────
+  /*
+  PURPOSE: Grabs the user's past fact-checks from the database.
+  */
   const fetchHistory = useCallback(async () => {
     if (!token) return;
     try {
@@ -146,32 +205,41 @@ function App() {
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
   // ─── Fact-check submission ──────────────────────────────────────────
+  /*
+  PURPOSE: Sends the user's typed statement to our backend to be checked.
+  */
   const handleSubmit = async (e) => {
-    e.preventDefault();
+    e.preventDefault(); // Stop the page from refreshing on form submit
+    
     const trimmed = statement.trim();
     if (trimmed.length < 5) {
       setError("Enter at least 5 characters.");
       return;
     }
+    
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
       const headers = { "Content-Type": "application/json" };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
+      if (token) headers["Authorization"] = `Bearer ${token}`; // Send token if logged in
+      
       const res = await fetch(`${API_BASE}/api/check`, {
         method: "POST",
         headers,
         body: JSON.stringify({ statement: trimmed }),
       });
+      
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `Request failed (${res.status})`);
       }
+      
       const data = await res.json();
       setResult(data);
-      if (token) fetchHistory();
+      
+      if (token) fetchHistory(); // Refresh history sidebar if logged in
     } catch (err) {
       setError(err.message || "Something went wrong.");
     } finally {
@@ -179,6 +247,9 @@ function App() {
     }
   };
 
+  /*
+  PURPOSE: When a user clicks a past item in their history sidebar, load it into the main view.
+  */
   const handleHistorySelect = async (item) => {
     setHistoryOpen(false);
     try {
@@ -186,6 +257,7 @@ function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error("Failed to load");
+      
       const full = await res.json();
       setStatement(full.statement);
       setResult({
@@ -217,6 +289,9 @@ function App() {
   };
 
   // ─── Route-based rendering ──────────────────────────────────────────
+  /*
+  PURPOSE: Switches which page component is shown based on the URL hash.
+  */
   const renderPage = () => {
     switch (page) {
       case "evaluation":
@@ -296,6 +371,7 @@ function App() {
             )}
           </div>
 
+          {/* Core Score UI */}
           <div className="score-card">
             <ScoreGauge
               score={result.combined_score}
@@ -316,6 +392,7 @@ function App() {
             </div>
           </div>
 
+          {/* Evidence Articles */}
           {result.top_evidence && result.top_evidence.length > 0 && (
             <div className="evidence-section" id="evidence-section">
               <p className="section-label">

@@ -1,62 +1,96 @@
+/*
+FILE PURPOSE:
+This file handles authentication routes, specifically logging in with Google.
+
+FLOW:
+1. Receives a Google ID token from the frontend.
+2. Verifies that token directly with Google's servers to ensure it's authentic.
+3. Checks if the user already exists in our MongoDB database.
+4. If they do, updates their profile. If not, creates a new user.
+5. Generates a custom JWT (JSON Web Token) for the user to use in our app.
+6. Sends the token and user profile back to the frontend.
+
+USED BY:
+- The React frontend when a user clicks the "Sign in with Google" button.
+*/
+
 import { Router } from "express";
 import { OAuth2Client } from "google-auth-library";
 import User from "../models/User.js";
 import { signToken, requireAuth } from "../middleware/auth.js";
 
+// Create a new Express Router to organize our routes
 const router = Router();
+
+// Our Google Client ID (from the Google Cloud Console)
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+
+// Initialize the Google OAuth client
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-/**
- * POST /api/auth/google
- * Body: { credential: "<Google ID token>" }
- *
- * Verifies the Google ID token, creates or finds the user in MongoDB,
- * and returns a signed JWT + user profile.
- */
+/*
+PURPOSE:
+Handle the POST request when a user tries to log in with Google.
+
+INPUT:
+req.body.credential (The Google ID token string)
+
+OUTPUT:
+JSON response containing { token, user } on success, or an error message on failure.
+
+WHY THIS EXISTS:
+We don't manage passwords ourselves. We let Google authenticate the user, 
+and then we create a session (via JWT) in our own app.
+*/
 router.post("/google", async (req, res) => {
   try {
     const { credential } = req.body;
 
+    // Step 1: Validate input
     if (!credential) {
       return res.status(400).json({ error: "Missing Google credential token." });
     }
 
-    // Verify the token with Google
+    // Step 2: Verify the token with Google
+    // This makes a network request to Google to ensure the token wasn't forged.
     const ticket = await googleClient.verifyIdToken({
       idToken: credential,
-      audience: GOOGLE_CLIENT_ID,
+      audience: GOOGLE_CLIENT_ID, // Ensure the token was meant for OUR app
     });
 
+    // Step 3: Extract user data from the verified token
     const payload = ticket.getPayload();
-    const { sub: googleId, email, name, picture } = payload;
+    const { sub: googleId, email, name, picture } = payload; // 'sub' is Google's unique ID for the user
 
-    // Find or create user in MongoDB
+    // Step 4: Find or create the user in our MongoDB database
     let user = await User.findOne({ googleId });
 
     if (!user) {
+      // If the user doesn't exist, create a new record
       user = await User.create({
         googleId,
         email,
         name,
-        avatar: picture || "",
+        avatar: picture || "", // Fallback to empty string if no picture
       });
     } else {
-      // Update profile in case name/avatar changed
+      // If they do exist, update their name and avatar in case they changed it on Google
       user.name = name;
       user.avatar = picture || "";
       await user.save();
     }
 
-    // Sign JWT
+    // Step 5: Generate our own JWT
+    // We don't want to pass Google's token around forever; we use our own.
     const token = signToken({
-      userId: user._id.toString(),
+      userId: user._id.toString(), // Our internal MongoDB ID
       email: user.email,
       name: user.name,
     });
 
+    // Step 6: Send the successful response
     res.json({
-      token,
+      token, // The frontend will save this token (e.g., in localStorage)
       user: {
         id: user._id,
         name: user.name,
@@ -65,23 +99,37 @@ router.post("/google", async (req, res) => {
       },
     });
   } catch (error) {
+    // If anything goes wrong (like an expired Google token), catch the error here
     console.error("Google auth error:", error.message);
     res.status(401).json({ error: "Invalid Google credential." });
   }
 });
 
-/**
- * GET /api/auth/me
- * Returns the current authenticated user's profile.
- */
+/*
+PURPOSE:
+Fetch the currently logged-in user's profile data.
+
+INPUT:
+Requires a valid JWT token in the Authorization header (handled by `requireAuth`).
+
+OUTPUT:
+JSON response with the user's profile data.
+
+WHY THIS EXISTS:
+When a user refreshes the page, the React app only has the JWT token. 
+It calls this endpoint to fetch the user's actual name, email, and avatar again.
+*/
 router.get("/me", requireAuth, async (req, res) => {
   try {
+    // Look up the user by the ID stored in the token (req.user is set by requireAuth)
+    // .select("-__v") tells Mongoose NOT to return the internal version field
     const user = await User.findById(req.user.userId).select("-__v");
 
     if (!user) {
       return res.status(404).json({ error: "User not found." });
     }
 
+    // Send back the user profile
     res.json({
       id: user._id,
       name: user.name,

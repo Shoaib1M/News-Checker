@@ -1,3 +1,19 @@
+"""
+FILE PURPOSE:
+This is the core Neural Network used in production by the API.
+Instead of predicting 6 distinct labels (which is very hard), it groups them into 2 categories:
+"Fake-ish" (pants-fire, false, barely-true) vs "True-ish" (half-true, mostly-true, true).
+
+FLOW:
+1. `BinaryTruthMLP`: A Neural Network that predicts a single probability between 0 and 1.
+2. `make_prediction_features()`: Combines the text of the statement with historical data (like a politician's past truth record) into one giant array of numbers.
+3. `fit()`: The training loop (Forward pass + Backpropagation).
+4. `save_artifacts() / load_artifacts()`: Saves the trained "brain" to the hard drive so the web server can load it instantly.
+
+USED BY:
+- `main.py` uses `load_artifacts()`, `make_prediction_features()`, and `predict_proba()` to answer live web requests.
+"""
+
 from pathlib import Path
 import pickle
 
@@ -6,7 +22,6 @@ import pandas as pd
 
 from tfidf import TFIDFVectorizer
 
-
 COLUMNS = [
     "id", "label", "statement", "subject", "speaker",
     "job", "state", "party",
@@ -14,14 +29,26 @@ COLUMNS = [
     "context",
 ]
 
+# We collapse 6 categories into 2 simple buckets for binary classification
 FAKEISH_LABELS = {"pants-fire", "false", "barely-true"}
 TRUEISH_LABELS = {"half-true", "mostly-true", "true"}
+
+# The text fields we want the model to read
 TEXT_FEATURE_COLUMNS = ["statement", "subject", "speaker", "job", "state", "party", "context"]
+
+# The historical truth record of the speaker (how many times they've lied in the past)
 HISTORY_COLUMNS = ["barely_true", "false", "half_true", "mostly_true", "pants_fire"]
+
+# Where we save the trained model on disk
 MODEL_FILE = Path(__file__).resolve().parent / "binary_truth_mlp.pkl"
 
 
 class BinaryTruthMLP:
+    """
+    PURPOSE: Initialize the Neural Network for Binary Classification.
+    Notice the output_size is missing, because a binary classifier just needs 1 output node 
+    (a percentage from 0 to 1).
+    """
     def __init__(
         self,
         input_size,
@@ -36,31 +63,47 @@ class BinaryTruthMLP:
         self.lr = learning_rate
         self.epochs = epochs
         self.batch_size = batch_size
+        
+        # The threshold determines where we draw the line between False and True.
+        # It defaults to 0.5 (50%), but we "tune" it during training to find the best cutoff.
         self.best_threshold = 0.5
 
         rng = np.random.default_rng(seed)
+        
+        # Layer 1 (Input -> Hidden)
         self.W1 = rng.normal(0, np.sqrt(2 / input_size), (input_size, hidden_size))
         self.b1 = np.zeros((1, hidden_size))
+        
+        # Layer 2 (Hidden -> Output: just 1 node)
         self.W2 = rng.normal(0, np.sqrt(2 / hidden_size), (hidden_size, 1))
         self.b2 = np.zeros((1, 1))
 
+    # Activation function for hidden layer
     def relu(self, x):
         return np.maximum(0, x)
 
     def relu_derivative(self, x):
         return (x > 0).astype(float)
 
+    """
+    PURPOSE: Squashes any number into a range between exactly 0.0 and 1.0.
+    WHY: Perfect for calculating probabilities!
+    """
     def sigmoid(self, z):
-        z = np.clip(z, -500, 500)
+        z = np.clip(z, -500, 500) # Prevent math crash if z is massively negative/positive
         return 1 / (1 + np.exp(-z))
 
     def forward(self, X):
         z1 = np.dot(X, self.W1) + self.b1
         a1 = self.relu(z1)
         z2 = np.dot(a1, self.W2) + self.b2
-        probability = self.sigmoid(z2)
+        probability = self.sigmoid(z2) # Use sigmoid instead of softmax for binary choice
         return z1, a1, probability
 
+    """
+    PURPOSE: Calculates Binary Cross-Entropy Loss. 
+    It heavily penalizes the model if it is extremely confident but WRONG.
+    """
     def loss(self, predicted, actual):
         predicted = np.clip(predicted.flatten(), 1e-9, 1 - 1e-9)
         return -np.mean(
@@ -82,8 +125,10 @@ class BinaryTruthMLP:
                 y_batch = y_shuffled[start:end]
                 current_batch_size = X_batch.shape[0]
 
+                # --- FORWARD PASS ---
                 z1, a1, predicted = self.forward(X_batch)
 
+                # --- BACKWARD PASS (Calculus to find mistakes) ---
                 # For sigmoid + binary cross-entropy, this gradient simplifies nicely.
                 dz2 = (predicted - y_batch) / current_batch_size
                 dW2 = np.dot(a1.T, dz2)
@@ -94,11 +139,13 @@ class BinaryTruthMLP:
                 dW1 = np.dot(X_batch.T, dz1)
                 db1 = np.sum(dz1, axis=0, keepdims=True)
 
+                # --- UPDATE WEIGHTS ---
                 self.W2 -= self.lr * dW2
                 self.b2 -= self.lr * db2
                 self.W1 -= self.lr * dW1
                 self.b1 -= self.lr * db1
 
+            # Reporting
             should_report = epoch == 1 or epoch % 5 == 0
             if should_report:
                 train_pred = self.predict_proba(X)
@@ -123,6 +170,7 @@ class BinaryTruthMLP:
 
                 print(message)
 
+        # After training finishes, find the absolute best cutoff line based on validation data
         if X_valid is not None and y_valid is not None:
             valid_pred = self.predict_proba(X_valid)
             self.best_threshold, _ = find_best_threshold(valid_pred, y_valid)
@@ -136,6 +184,10 @@ class BinaryTruthMLP:
             threshold = self.best_threshold
         return (self.predict_proba(X) >= threshold).astype(int)
 
+    """
+    PURPOSE: Packages up the trained weights and configurations into a dictionary.
+    WHY: So we can save it to a file.
+    """
     def state_dict(self):
         return {
             "input_size": self.input_size,
@@ -150,6 +202,9 @@ class BinaryTruthMLP:
             "b2": self.b2,
         }
 
+    """
+    PURPOSE: Recreates the model from a loaded dictionary of weights.
+    """
     @classmethod
     def from_state_dict(cls, state):
         model = cls(
@@ -167,6 +222,13 @@ class BinaryTruthMLP:
         return model
 
 
+# ---------------------------------------------------------------------------
+# DATA PREPARATION HELPERS
+# ---------------------------------------------------------------------------
+
+"""
+PURPOSE: Converts string labels ("pants-fire", "true") into numbers (0.0 or 1.0).
+"""
 def labels_to_binary(labels):
     return labels.apply(lambda label: 1 if label in TRUEISH_LABELS else 0).values.astype(float)
 
@@ -175,7 +237,11 @@ def accuracy(predicted_scores, actual, threshold=0.5):
     predicted = predicted_scores >= threshold
     return np.mean(predicted == actual)
 
-
+"""
+PURPOSE: Finds the optimal decision cutoff.
+WHY: Sometimes the model is hesitant. E.g., maybe it never gives a score higher than 40%.
+By tuning the threshold (e.g., deciding anything > 35% is True), we can maximize real-world accuracy.
+"""
 def find_best_threshold(predicted_scores, actual):
     best_threshold = 0.5
     best_acc = 0
@@ -192,7 +258,9 @@ def find_best_threshold(predicted_scores, actual):
 def normalize_rows(X):
     return X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
 
-
+"""
+PURPOSE: Mashes the statement, speaker name, job, and state into one long string.
+"""
 def build_text_input(df):
     pieces = []
     for column in TEXT_FEATURE_COLUMNS:
@@ -201,18 +269,26 @@ def build_text_input(df):
 
     return pd.Series(" ".join(row) for row in zip(*pieces))
 
-
+"""
+PURPOSE: Extracts numerical history data and scales it down.
+"""
 def build_history_features(df, train_max_values=None):
     features = df[HISTORY_COLUMNS].fillna(0).astype(float).values
+    # log1p prevents people with 10,000 past statements from overpowering the model
     features = np.log1p(features)
 
+    # Scale everything so max is 1.0
     if train_max_values is None:
         train_max_values = np.maximum(features.max(axis=0, keepdims=True), 1)
 
     return features / train_max_values, train_max_values
 
+# ---------------------------------------------------------------------------
+# SAVING & LOADING
+# ---------------------------------------------------------------------------
 
 def save_artifacts(path, model, vectorizer, train_max_values):
+    # Bundle everything needed to make a prediction into one object
     artifacts = {
         "model": model.state_dict(),
         "vectorizer": {
@@ -225,6 +301,7 @@ def save_artifacts(path, model, vectorizer, train_max_values):
         "train_max_values": train_max_values,
     }
 
+    # Save it to disk using Python's "pickle" library
     with open(path, "wb") as file:
         pickle.dump(artifacts, file)
 
@@ -233,6 +310,7 @@ def load_artifacts(path):
     with open(path, "rb") as file:
         artifacts = pickle.load(file)
 
+    # Reconstruct the TFIDF Vectorizer
     vectorizer_state = artifacts["vectorizer"]
     vectorizer = TFIDFVectorizer(
         ngram_range=vectorizer_state["ngram_range"],
@@ -242,10 +320,14 @@ def load_artifacts(path):
     vectorizer.idf_values = vectorizer_state["idf_values"]
     vectorizer.vocab_size = vectorizer_state["vocab_size"]
 
+    # Reconstruct the Neural Network
     model = BinaryTruthMLP.from_state_dict(artifacts["model"])
+    
     return model, vectorizer, artifacts["train_max_values"]
 
-
+"""
+PURPOSE: Core function used by `main.py` to turn raw text into model-ready numbers.
+"""
 def make_prediction_features(
     vectorizer,
     train_max_values,
@@ -262,6 +344,7 @@ def make_prediction_features(
     mostly_true=0,
     pants_fire=0,
 ):
+    # Pack it into a 1-row DataFrame so our builder functions work normally
     row = pd.DataFrame([{
         "statement": statement,
         "subject": subject,
@@ -277,9 +360,14 @@ def make_prediction_features(
         "pants_fire": pants_fire,
     }])
 
+    # 1. Process Text
     text = build_text_input(row)
     text_features = normalize_rows(vectorizer.transform(text))
+    
+    # 2. Process History
     history_features, _ = build_history_features(row, train_max_values)
+    
+    # 3. Glue them together side-by-side
     return np.hstack([text_features, history_features])
 
 
@@ -306,6 +394,10 @@ def explain_probability(score):
         return "probably correct"
     return "very likely correct"
 
+
+# ---------------------------------------------------------------------------
+# LOCAL TRAINING & TESTING SCRIPTS
+# ---------------------------------------------------------------------------
 
 def main():
     base_dir = Path(__file__).resolve().parent
