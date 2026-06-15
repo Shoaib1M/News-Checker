@@ -995,8 +995,11 @@ def collect_evidence(statement, max_results=15, fetch_articles=True, use_fallbac
 
     # Step 2: Use DuckDuckGo fallback if requested
     if use_fallback:
-        fallback_documents = collect_duckduckgo_evidence(statement, max_results=max_results, fetch_articles=fetch_articles)
-        documents = dedupe_documents(documents + fallback_documents)
+        try:
+            fallback_documents = collect_duckduckgo_evidence(statement, max_results=max_results, fetch_articles=fetch_articles)
+            documents = dedupe_documents(documents + fallback_documents)
+        except Exception as error:
+            print(f"DuckDuckGo fallback failed: {error}")
 
     # Step 3: Fetch Full HTML Text
     if documents:
