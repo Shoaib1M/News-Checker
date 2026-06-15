@@ -43,7 +43,7 @@ GUARDIAN_URL = "https://content.guardianapis.com/search"
 ENV_PATHS = [
     Path(__file__).resolve().parent / ".env",
     Path(__file__).resolve().parent.parent / ".env",
-    Path(__file__).resolve().parents[2] / ".env",
+    Path(__file__).resolve().parent.parent.parent / ".env",
 ]
 
 USER_AGENT = (
