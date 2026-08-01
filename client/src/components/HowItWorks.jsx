@@ -17,8 +17,15 @@ It shows employers or users exactly how much thought went into the system's desi
 
 import { useState } from "react";
 import {
-  Package, FileText, Brain, CheckCircle2, Globe, Target,
-  Layers, Calculator, Code2
+  Package,
+  FileText,
+  Brain,
+  CheckCircle2,
+  Globe,
+  Target,
+  Layers,
+  Calculator,
+  Code2,
 } from "lucide-react";
 
 // The raw data for our interactive "Pipeline" accordion
@@ -68,7 +75,7 @@ Input Layer → Dense(64, ReLU) → Dense(1, Sigmoid)
 Training details:
 • Mini-batch SGD with batch size 128
 • Learning rate: 0.05
-• 70 training epochs
+• 40 training epochs
 • Binary cross-entropy loss
 • Xavier/He weight initialisation
 • Threshold tuned on the validation set (not fixed at 0.5)
@@ -150,16 +157,19 @@ export default function HowItWorks() {
         <p className="intro-tag">System Architecture · End-to-End Pipeline</p>
         <h2 className="intro-heading">How It Works</h2>
         <p className="intro-desc">
-          From raw dataset to credibility score — every step explained.
-          Click any stage to see the full technical details.
+          From raw dataset to credibility score — every step explained. Click
+          any stage to see the full technical details.
         </p>
       </section>
 
       {/* Visual Pipeline (The clickable buttons) */}
       <div className="hiw-pipeline" id="pipeline-diagram">
         {PIPELINE_STEPS.map((step, i) => (
-          <div key={step.id} className="hiw-step-wrapper" style={{ animationDelay: `${i * 0.08}s` }}>
-            
+          <div
+            key={step.id}
+            className="hiw-step-wrapper"
+            style={{ animationDelay: `${i * 0.08}s` }}
+          >
             {/* Draw a connecting arrow between steps */}
             {i > 0 && (
               <div className="hiw-arrow">
@@ -178,7 +188,9 @@ export default function HowItWorks() {
               {step.icon}
               <span className="hiw-step-title">{step.title}</span>
               <span className="hiw-step-short">{step.short}</span>
-              <span className="hiw-step-toggle">{expanded === step.id ? "−" : "+"}</span>
+              <span className="hiw-step-toggle">
+                {expanded === step.id ? "−" : "+"}
+              </span>
             </button>
           </div>
         ))}
@@ -195,8 +207,8 @@ export default function HowItWorks() {
           </div>
           <div className="hiw-detail-body">
             {/* Split the detail text by newlines and render proper HTML tags */}
-            {PIPELINE_STEPS.find((s) => s.id === expanded)?.detail
-              .split("\n")
+            {PIPELINE_STEPS.find((s) => s.id === expanded)
+              ?.detail.split("\n")
               .map((line, i) => {
                 const trimmed = line.trim();
                 if (!trimmed) return <br key={i} />;
@@ -219,8 +231,9 @@ export default function HowItWorks() {
           <NeuralNetDiagram />
         </div>
         <p className="hiw-arch-caption">
-          Binary Truth MLP: input features → 64-neuron hidden layer with ReLU activation → single sigmoid output.
-          All weights trained via backpropagation with mini-batch SGD.
+          Binary Truth MLP: input features → 64-neuron hidden layer with ReLU
+          activation → single sigmoid output. All weights trained via
+          backpropagation with mini-batch SGD.
         </p>
       </div>
 
@@ -251,16 +264,33 @@ export default function HowItWorks() {
         </div>
         <div className="hiw-formula-legend">
           <div className="hiw-legend-item">
-            <span className="hiw-legend-dot" style={{ background: "var(--purple)" }} />
-            <span><strong>ML Score</strong> — Model's sigmoid probability (0–1)</span>
+            <span
+              className="hiw-legend-dot"
+              style={{ background: "var(--purple)" }}
+            />
+            <span>
+              <strong>ML Score</strong> — Model's sigmoid probability (0–1)
+            </span>
           </div>
           <div className="hiw-legend-item">
-            <span className="hiw-legend-dot" style={{ background: "var(--blue)" }} />
-            <span><strong>Evidence</strong> — Average cosine similarity of top articles (0–1)</span>
+            <span
+              className="hiw-legend-dot"
+              style={{ background: "var(--blue)" }}
+            />
+            <span>
+              <strong>Evidence</strong> — Average cosine similarity of top
+              articles (0–1)
+            </span>
           </div>
           <div className="hiw-legend-item">
-            <span className="hiw-legend-dot" style={{ background: "var(--green)" }} />
-            <span><strong>Stance</strong> — Net support vs contradiction, normalised (0–1)</span>
+            <span
+              className="hiw-legend-dot"
+              style={{ background: "var(--green)" }}
+            />
+            <span>
+              <strong>Stance</strong> — Net support vs contradiction, normalised
+              (0–1)
+            </span>
           </div>
         </div>
       </div>
@@ -272,10 +302,22 @@ export default function HowItWorks() {
         </h3>
         <div className="hiw-tech-grid">
           {[
-            { label: "ML / Data", items: ["Python", "NumPy", "Pandas", "Custom TF-IDF"] },
-            { label: "Backend", items: ["FastAPI", "Node.js / Express", "MongoDB"] },
-            { label: "Frontend", items: ["React (Vite)", "Vanilla CSS", "Lucide Icons"] },
-            { label: "APIs", items: ["DuckDuckGo", "GNews", "NewsAPI", "The Guardian"] },
+            {
+              label: "ML / Data",
+              items: ["Python", "NumPy", "Pandas", "Custom TF-IDF"],
+            },
+            {
+              label: "Backend",
+              items: ["FastAPI", "Node.js / Express", "MongoDB"],
+            },
+            {
+              label: "Frontend",
+              items: ["React (Vite)", "Vanilla CSS", "Lucide Icons"],
+            },
+            {
+              label: "APIs",
+              items: ["DuckDuckGo", "GNews", "NewsAPI", "The Guardian"],
+            },
           ].map((group) => (
             <div className="hiw-tech-group" key={group.label}>
               <h4>{group.label}</h4>
@@ -292,7 +334,6 @@ export default function HowItWorks() {
   );
 }
 
-
 // ─── Neural Net Diagram ─────────────────────────────────────────────
 
 /*
@@ -305,7 +346,7 @@ function NeuralNetDiagram() {
   const outputCount = 1;
   const width = 500;
   const height = 280;
-  
+
   // The horizontal (X) positions of our three layers
   const layerX = [80, 250, 420];
 
@@ -325,19 +366,20 @@ function NeuralNetDiagram() {
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="hiw-nn-svg">
-      
       {/* Connections: Input Layer → Hidden Layer */}
       {inputNodes.map((inp, i) =>
         hiddenNodes.map((hid, j) => (
           <line
             key={`ih-${i}-${j}`}
-            x1={inp.x + 20} y1={inp.y}
-            x2={hid.x - 20} y2={hid.y}
+            x1={inp.x + 20}
+            y1={inp.y}
+            x2={hid.x - 20}
+            y2={hid.y}
             className="hiw-nn-conn"
             // Random opacity makes the web of connections look more organic
             style={{ opacity: 0.25 + Math.random() * 0.3 }}
           />
-        ))
+        )),
       )}
 
       {/* Connections: Hidden Layer → Output Node */}
@@ -345,42 +387,75 @@ function NeuralNetDiagram() {
         outputNodes.map((out, j) => (
           <line
             key={`ho-${i}-${j}`}
-            x1={hid.x + 20} y1={hid.y}
-            x2={out.x - 20} y2={out.y}
+            x1={hid.x + 20}
+            y1={hid.y}
+            x2={out.x - 20}
+            y2={out.y}
             className="hiw-nn-conn hiw-nn-conn-out"
             style={{ opacity: 0.4 + Math.random() * 0.3 }}
           />
-        ))
+        )),
       )}
 
       {/* Draw Input nodes (Circles + Text) */}
       {inputNodes.map((node, i) => (
         <g key={`in-${i}`}>
-          <circle cx={node.x} cy={node.y} r={16} className="hiw-nn-node hiw-nn-input" />
-          <text x={node.x} y={node.y + 4} className="hiw-nn-label">{inputLabels[i]}</text>
+          <circle
+            cx={node.x}
+            cy={node.y}
+            r={16}
+            className="hiw-nn-node hiw-nn-input"
+          />
+          <text x={node.x} y={node.y + 4} className="hiw-nn-label">
+            {inputLabels[i]}
+          </text>
         </g>
       ))}
 
       {/* Draw Hidden nodes */}
       {hiddenNodes.map((node, i) => (
         <g key={`hid-${i}`}>
-          <circle cx={node.x} cy={node.y} r={16} className="hiw-nn-node hiw-nn-hidden" />
-          <text x={node.x} y={node.y + 4} className="hiw-nn-label">{hiddenLabels[i]}</text>
+          <circle
+            cx={node.x}
+            cy={node.y}
+            r={16}
+            className="hiw-nn-node hiw-nn-hidden"
+          />
+          <text x={node.x} y={node.y + 4} className="hiw-nn-label">
+            {hiddenLabels[i]}
+          </text>
         </g>
       ))}
 
       {/* Draw Output node */}
       {outputNodes.map((node, i) => (
         <g key={`out-${i}`}>
-          <circle cx={node.x} cy={node.y} r={20} className="hiw-nn-node hiw-nn-output" />
-          <text x={node.x} y={node.y + 4} className="hiw-nn-label hiw-nn-output-label">σ</text>
+          <circle
+            cx={node.x}
+            cy={node.y}
+            r={20}
+            className="hiw-nn-node hiw-nn-output"
+          />
+          <text
+            x={node.x}
+            y={node.y + 4}
+            className="hiw-nn-label hiw-nn-output-label"
+          >
+            σ
+          </text>
         </g>
       ))}
 
       {/* Layer labels at the bottom */}
-      <text x={layerX[0]} y={height - 5} className="hiw-nn-layer-label">Input Layer</text>
-      <text x={layerX[1]} y={height - 5} className="hiw-nn-layer-label">Hidden (64, ReLU)</text>
-      <text x={layerX[2]} y={height - 5} className="hiw-nn-layer-label">Output (σ)</text>
+      <text x={layerX[0]} y={height - 5} className="hiw-nn-layer-label">
+        Input Layer
+      </text>
+      <text x={layerX[1]} y={height - 5} className="hiw-nn-layer-label">
+        Hidden (64, ReLU)
+      </text>
+      <text x={layerX[2]} y={height - 5} className="hiw-nn-layer-label">
+        Output (σ)
+      </text>
     </svg>
   );
 }
