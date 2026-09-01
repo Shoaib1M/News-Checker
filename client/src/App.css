@@ -227,6 +227,24 @@
 .btn-check:hover:not(:disabled) { background: var(--purple-dark); }
 .btn-check:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.claim-examples {
+  margin: -0.75rem 0 1.75rem;
+  padding: 0.85rem 1rem;
+  border-left: 2px solid var(--gray-200);
+  color: var(--gray-500);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.claim-examples-title {
+  margin: 0 0 0.35rem;
+  color: var(--gray-700);
+  font-weight: 600;
+}
+
+.claim-examples p:not(.claim-examples-title) { margin: 0.2rem 0; }
+.claim-examples span { color: var(--gray-700); }
+
 .spinner {
   width: 14px;
   height: 14px;

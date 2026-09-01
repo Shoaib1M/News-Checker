@@ -353,6 +353,13 @@ function App() {
         </div>
       </form>
 
+      <aside className="claim-examples" aria-label="Claim examples">
+        <p className="claim-examples-title">Few examples</p>
+        <p><span>"Water freezes at 0°C at sea level."</span> — true</p>
+        <p><span>"A four-day workweek improves productivity."</span> — middle (50%) ish</p>
+        <p><span>"The Great Wall of China is visible from the Moon with the naked eye."</span> — false</p>
+      </aside>
+
       {/* Error */}
       {error && (
         <div className="error-banner" id="error-message">
