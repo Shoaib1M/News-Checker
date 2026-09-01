@@ -934,8 +934,11 @@ def stance_summary(results, top_k=5):
         }
 
     top_results = relevant_results[:top_k]
+    # Preserve source authority during aggregation as well as ranking.  Without
+    # this, several lower-authority articles can outweigh one primary source
+    # simply because they appear in the result set more often.
     weights = np.array([
-        result.similarity / (index + 1)
+        result.source_weight * result.similarity / (index + 1)
         for index, result in enumerate(top_results)
     ])
     if np.sum(weights) == 0: weights = np.ones(len(top_results))

@@ -8,6 +8,7 @@ if str(SERVICE_DIR) not in sys.path:
 
 import evidence_scraper
 from claim_verifier import NLIScorer
+from evidence_scraper import EvidenceResult, stance_summary
 
 
 class FixedPipeline:
@@ -71,6 +72,36 @@ class EvidenceAssessmentTests(unittest.TestCase):
             }],
         )
         self.assertEqual(evidence_scraper.stance_summary(results)["status"], "insufficient_evidence")
+
+    def test_primary_source_has_more_weight_than_repeated_reporting(self):
+        def result(source_tier, source_weight, support, contradiction, similarity):
+            return EvidenceResult(
+                url=f"https://{source_tier}.example/story",
+                title="Claim report",
+                snippet="",
+                similarity=similarity,
+                text_length=100,
+                provider="test",
+                source=source_tier,
+                support_score=support,
+                contradiction_score=contradiction,
+                stance="supports" if support > contradiction else "contradicts",
+                best_sentence="Claim report.",
+                source_tier=source_tier,
+                source_weight=source_weight,
+                nli_available=True,
+            )
+
+        results = [
+            result("primary", 1.0, 0.90, 0.05, 0.8),
+            result("reporting", 0.8, 0.05, 0.90, 0.8),
+            result("reporting", 0.8, 0.05, 0.90, 0.8),
+        ]
+
+        summary = stance_summary(results)
+
+        self.assertEqual(summary["status"], "supported")
+        self.assertGreater(summary["net"], 0)
 
 
 if __name__ == "__main__":

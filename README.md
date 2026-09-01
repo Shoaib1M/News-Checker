@@ -52,11 +52,11 @@ shown as the production model's performance.
 
 The production-equivalent, statement-only evaluation is currently:
 
-*   **Accuracy:** 61.80%
-*   **Precision:** 64.52%
-*   **Recall:** 71.57%
-*   **F1 Score:** 0.6786
-*   **Brier score:** 0.2300
+*   **Accuracy:** 62.35%
+*   **Precision:** 63.18%
+*   **Recall:** 79.55%
+*   **F1 Score:** 0.7043
+*   **Brier score:** 0.2262
 
 This is deliberately treated as a legacy US-political prior, not an accuracy
 claim for general news. The final application verdict comes from retrieved,

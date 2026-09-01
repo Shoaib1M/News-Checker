@@ -401,15 +401,18 @@ def explain_probability(score):
 
 def main():
     base_dir = Path(__file__).resolve().parent
-    data_dir = base_dir.parent / "data"
+    data_dir = base_dir / "data"
 
     train_df = pd.read_csv(data_dir / "train.tsv", sep="\t", names=COLUMNS)
     valid_df = pd.read_csv(data_dir / "valid.tsv", sep="\t", names=COLUMNS)
     test_df = pd.read_csv(data_dir / "test.tsv", sep="\t", names=COLUMNS)
 
-    train_text = build_text_input(train_df)
-    valid_text = build_text_input(valid_df)
-    test_text = build_text_input(test_df)
+    # Train on the same statement-only input available to the live API.
+    # Including speaker history here would inflate offline scores because
+    # production requests do not provide those fields.
+    train_text = train_df["statement"].fillna("").astype(str)
+    valid_text = valid_df["statement"].fillna("").astype(str)
+    test_text = test_df["statement"].fillna("").astype(str)
 
     print("Building TF-IDF vocabulary from training data...")
     vectorizer = TFIDFVectorizer()
@@ -419,9 +422,15 @@ def main():
     X_valid_text = normalize_rows(vectorizer.transform(valid_text))
     X_test_text = normalize_rows(vectorizer.transform(test_text))
 
-    X_train_history, train_max_values = build_history_features(train_df)
-    X_valid_history, _ = build_history_features(valid_df, train_max_values)
-    X_test_history, _ = build_history_features(test_df, train_max_values)
+    X_train_history, train_max_values = build_history_features(
+        train_df.assign(**{column: 0 for column in HISTORY_COLUMNS})
+    )
+    X_valid_history, _ = build_history_features(
+        valid_df.assign(**{column: 0 for column in HISTORY_COLUMNS}), train_max_values
+    )
+    X_test_history, _ = build_history_features(
+        test_df.assign(**{column: 0 for column in HISTORY_COLUMNS}), train_max_values
+    )
 
     X_train = np.hstack([X_train_text, X_train_history])
     X_valid = np.hstack([X_valid_text, X_valid_history])
