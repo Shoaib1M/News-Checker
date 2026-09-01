@@ -32,6 +32,9 @@ import numpy as np
 
 from tfidf import TFIDFVectorizer
 from claim_verifier import NLIScorer, classify_source
+from claim_decomposer import decompose_claim, ClaimDecomposition
+from query_generator import QueryGenerator
+from relevance_filter import RelevanceFilter
 
 # ---------------------------------------------------------------------------
 # CONSTANTS & CONFIGURATIONS
@@ -427,21 +430,32 @@ def search_guardian(statement, max_results=10):
 
 """
 PURPOSE: Orchestrates the APIs, calling whichever ones are configured in the .env file.
+Uses multiple query variants for better coverage.
 """
 def search_api_providers(statement, max_results_per_provider=10):
+    # Generate multiple targeted search queries
+    queries = generate_search_queries(statement)
+    
     providers = [
         ("gnews", search_gnews),
         ("guardian", search_guardian),
         ("newsapi", search_newsapi),
     ]
     documents = []
+    seen_urls = set()
 
-    for provider_name, provider_func in providers:
-        try:
-            provider_documents = provider_func(statement, max_results=max_results_per_provider)
-            documents.extend(provider_documents)
-        except Exception as error:
-            print(f"{provider_name} failed: {error}")
+    # For each query, search with each provider
+    for query in queries[:3]:  # Limit to top 3 queries to avoid too many requests
+        for provider_name, provider_func in providers:
+            try:
+                provider_documents = provider_func(query, max_results=max_results_per_provider // 2)
+                for doc in provider_documents:
+                    url = doc.get('url', '')
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        documents.append(doc)
+            except Exception as error:
+                print(f"{provider_name} failed for query '{query}': {error}")
 
     return dedupe_documents(documents)
 
@@ -513,56 +527,24 @@ def ordered_keywords(text):
 
 """
 PURPOSE:
-Turns a human sentence ("Hillary Clinton said she likes cats") into a search engine friendly string ("Hillary Clinton likes cats").
+Generate multiple targeted search queries for a claim using claim decomposition.
 
-WHY THIS EXISTS:
-If you search Google for the exact long sentence, you might get zero results.
-This extracts names (Hillary Clinton), numbers, and core topics.
+This replaces the old keyword-based approach with semantic understanding of the claim.
 """
-def build_search_query(statement):
-    important_words = ordered_keywords(statement)
-    if not important_words: return statement
-
-    # 1. Pull Capitalized words (usually names, places, organizations)
-    named_entities = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*", statement)
-    entity_words = []
-    entity_keys = set()
-    for entity in named_entities:
-        entity_lower = entity.lower()
-        if entity_lower not in STOPWORDS and len(entity_lower) > 2:
-            entity_words.append(entity)
-            for token in entity_lower.split():
-                entity_keys.add(token)
-
-    # 2. Pull numbers/percentages
-    numbers = re.findall(r"\b\d+(?:[.,]\d+)?%?\b", statement)
-
-    direction_keys = set([w for w in important_words if w in DIRECTION_WORDS])
-
-    # 3. Pull remaining regular keywords
-    original_tokens = re.findall(r"[a-z][a-z0-9]+", statement.lower())
-    seen_remaining = set()
-    remaining = []
-    for token in original_tokens:
-        if token in STOPWORDS or len(token) <= 2: continue
-        if token in entity_keys or token in direction_keys: continue
-        if token not in seen_remaining:
-            seen_remaining.add(token)
-            remaining.append(token)
-
-    # 4. Construct query: Names first, then general keywords, then numbers. 
-    # Direction words (increase/decrease) are EXCLUDED so we don't bias the search results!
-    query_parts = entity_words[:3] + remaining[:5] + numbers[:2]
-
-    seen = set()
-    deduped = []
-    for part in query_parts:
-        key = part.lower()
-        if key not in seen:
-            seen.add(key)
-            deduped.append(part)
-
-    return " ".join(deduped) or statement
+def generate_search_queries(statement):
+    """
+    Generate multiple targeted search queries using claim decomposition.
+    
+    Returns list of query strings optimized for different evidence types.
+    """
+    try:
+        generator = QueryGenerator()
+        queries = generator.generate_queries(statement)
+        return [q['query'] for q in queries]
+    except Exception as e:
+        print(f"Query generation failed: {e}, falling back to original query")
+        # Fallback to original single query
+        return [build_search_query(statement)]
 
 """
 PURPOSE:
@@ -972,27 +954,37 @@ def stance_summary(results, top_k=5):
 # ---------------------------------------------------------------------------
 
 def collect_duckduckgo_evidence(statement, max_results=15, fetch_articles=True):
-    """Fallback orchestrator using DuckDuckGo."""
-    search_results = search_web(statement, max_results=max_results)
+    """Fallback orchestrator using DuckDuckGo with multiple query variants."""
+    # Generate multiple targeted queries
+    queries = generate_search_queries(statement)
+    
+    search_results = []
+    seen_urls = set()
 
-    # Ask explicitly for independent verification, not only reporting that may
-    # repeat the original assertion.  Source classification still gates any
-    # effect on the final verdict.
-    try:
-        verification_results = search_web_raw(
-            f"{build_search_query(statement)} fact check", max_results=max_results // 2
-        )
-        search_results = dedupe_search_results(search_results + verification_results)
-    except Exception:
-        pass
-
+    for query in queries[:4]:  # Use top 4 queries
+        try:
+            results = search_web(query, max_results=max_results // len(queries))
+            for result in results:
+                url = result.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    search_results.append(result)
+        except Exception as e:
+            print(f"DuckDuckGo search failed for query '{query}': {e}")
+            continue
+    
+    # Also try to find contradictory evidence
     opposite_query = build_opposite_search_query(statement)
     if opposite_query:
         try:
-            opposite_results = search_web_raw(opposite_query, max_results=max_results // 2)
-            search_results = dedupe_search_results(search_results + opposite_results)
-        except Exception:
-            pass
+            opposite_results = search_web_raw(opposite_query, max_results=max_results // 3)
+            for result in opposite_results:
+                url = result.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    search_results.append(result)
+        except Exception as e:
+            print(f"Opposite query search failed: {e}")
 
     documents = []
     for result in search_results:
@@ -1034,15 +1026,16 @@ def enrich_documents_with_article_text(documents, fetch_articles=True):
 """
 PURPOSE: The Master Function called by `main.py`.
 FLOW: 
-1. Tries News APIs. 
+1. Tries News APIs with multiple query variants. 
 2. Falls back to DuckDuckGo if needed. 
 3. Downloads text. 
-4. Ranks & Scores.
+4. Applies strict relevance filtering to eliminate irrelevant articles.
+5. Ranks & Scores remaining evidence.
 """
 def collect_evidence(statement, max_results=15, fetch_articles=True, use_fallback=True):
     load_env_file()
     
-    # Step 1: Try APIs
+    # Step 1: Try APIs with multiple queries
     documents = search_api_providers(statement, max_results_per_provider=max_results)
 
     # Step 2: Use DuckDuckGo fallback if requested
@@ -1058,9 +1051,29 @@ def collect_evidence(statement, max_results=15, fetch_articles=True, use_fallbac
         documents = enrich_documents_with_article_text(documents, fetch_articles=fetch_articles)
     else:
         documents = []
-
-    # Step 4: Run the Scorer
-    ranked_results = rank_by_similarity(statement, documents)
+    
+    # Step 4: CRITICAL - Apply strict relevance filtering
+    # This eliminates irrelevant articles before they reach NLI/scoring
+    relevance_filter = RelevanceFilter()
+    relevant_documents, _ = relevance_filter.filter_documents(
+        statement, 
+        documents, 
+        strict=False  # Use standard threshold for initial filtering
+    )
+    
+    if not relevant_documents:
+        # No relevant documents found - return empty evidence
+        print(f"No relevant documents found after filtering. Original search returned {len(documents)} candidates.")
+        return 0.0, {
+            "support": 0.0, "contradiction": 0.0, "net": 0.0,
+            "verdict": "no relevant external evidence found", 
+            "status": "insufficient_evidence",
+            "nli_available": False, 
+            "evidence_count": 0,
+        }, []
+    
+    # Step 5: Run the Scorer on relevant documents only
+    ranked_results = rank_by_similarity(statement, relevant_documents)
     
     # Return 3 things: The overall score, the stance summary, and the list of articles
     return evidence_score(ranked_results), stance_summary(ranked_results), ranked_results
