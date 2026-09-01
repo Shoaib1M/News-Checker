@@ -268,6 +268,8 @@ function App() {
         evidence_stance: full.evidenceStance,
         combined_score: full.combinedScore,
         combined_verdict: full.combinedVerdict,
+        assessment_status: full.assessmentStatus,
+        claim_assessments: full.claimAssessments,
         top_evidence: full.topEvidence,
         processing_time_seconds: full.processingTime,
       });
@@ -376,6 +378,7 @@ function App() {
             <ScoreGauge
               score={result.combined_score}
               verdict={result.combined_verdict}
+              assessmentStatus={result.assessment_status}
             />
             <div className="score-details">
               <p className="verdict-text" data-score={result.combined_score}>
@@ -384,6 +387,11 @@ function App() {
               <p className="verdict-statement">
                 "{result.statement}"
               </p>
+              {result.assessment_status === "insufficient_evidence" && (
+                <p className="assessment-note">
+                  No verdict was made: there is not enough classified, NLI-checked evidence yet.
+                </p>
+              )}
               <ScoreBreakdown
                 mlScore={result.ml_score}
                 evidenceScore={result.evidence_score}

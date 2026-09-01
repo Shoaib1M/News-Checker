@@ -84,6 +84,15 @@ router.post("/", optionalAuth, async (req, res) => {
           evidenceStance: result.evidence_stance,
           combinedScore: result.combined_score,
           combinedVerdict: result.combined_verdict,
+          assessmentStatus: result.assessment_status,
+          claimAssessments: (result.claim_assessments || []).map((assessment) => ({
+            claim: assessment.claim,
+            status: assessment.status,
+            verdict: assessment.verdict,
+            support: assessment.support,
+            contradiction: assessment.contradiction,
+            evidenceCount: assessment.evidence_count,
+          })),
           topEvidence: result.top_evidence,
           processingTime: result.processing_time_seconds,
         });

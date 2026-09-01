@@ -45,7 +45,7 @@ router.get("/", requireAuth, async (req, res) => {
       .sort({ createdAt: -1 })                                   // Sort by newest first (-1 means descending)
       .skip(skip)
       .limit(limit)
-      .select("statement combinedScore combinedVerdict createdAt") // Only fetch these specific fields
+      .select("statement combinedScore combinedVerdict assessmentStatus createdAt") // Only fetch these specific fields
       .lean(); // .lean() converts Mongoose documents to plain JavaScript objects for faster performance
 
     // Step 3: Count total documents (needed by frontend to calculate total number of pages)

@@ -7,9 +7,10 @@ FLOW:
 1. `lifespan`: When the server starts, it loads the trained MLP model and TF-IDF vectorizer from disk into memory.
 2. Registers two endpoints: `/api/health` and `/api/check`.
 3. When `/api/check` is hit:
-   - It runs the text through the ML model.
-   - It scrapes the web for evidence.
-   - It blends the ML score and Evidence score into a final credibility rating.
+   - It returns the legacy MLP score as an experimental claim prior.
+   - It extracts atomic claims, retrieves evidence, and uses NLI to compare
+     each claim with relevant passages.
+   - It produces a verdict only when enough classified evidence is available.
 
 USED BY:
 - The Node.js Express server (`server/routes/check.js`) sends POST requests here.
@@ -20,7 +21,6 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -40,7 +40,8 @@ from binary_truth_mlp import (
     load_artifacts,
     make_prediction_features,
 )
-from evidence_scraper import collect_evidence, load_env_file
+from claim_verifier import extract_claims
+from evidence_scraper import collect_evidence, load_env_file, warm_evidence_model
 
 # ---------------------------------------------------------------------------
 # GLOBAL STATE
@@ -50,6 +51,7 @@ from evidence_scraper import collect_evidence, load_env_file
 _model = None
 _vectorizer = None
 _train_max_values = None
+_nli_status = {"available": False, "model": None, "error": "not initialized"}
 
 """
 PURPOSE:
@@ -61,7 +63,7 @@ read the `.pkl` file from the hard drive into RAM so it's ready to instantly ser
 """
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _model, _vectorizer, _train_max_values
+    global _model, _vectorizer, _train_max_values, _nli_status
 
     # Step 1: Locate the trained model file
     model_path = SERVICE_DIR / "binary_truth_mlp.pkl"
@@ -85,6 +87,11 @@ async def lifespan(app: FastAPI):
 
     # Step 3: Load API keys for the web scraper
     load_env_file()
+    _nli_status = warm_evidence_model()
+    if _nli_status["available"]:
+        print(f"NLI evidence model ready — {_nli_status['model']}")
+    else:
+        print("NLI evidence model unavailable; checks will abstain until it is available.")
 
     # Yield hands control back to FastAPI to start accepting requests
     yield  
@@ -98,7 +105,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 app = FastAPI(
     title="NewsChecker ML Service",
-    description="Fact-check statements using an MLP model + web evidence scraping.",
+    description="Evidence-first fact checking with NLI-backed claim verification.",
     version="1.0.0",
     lifespan=lifespan, # Attach our startup function
 )
@@ -130,12 +137,25 @@ class EvidenceItem(BaseModel):
     best_sentence: str
     support_score: float
     contradiction_score: float
+    source_tier: str = "unclassified"
+    nli_available: bool = False
 
 class StanceSummary(BaseModel):
     support: float
     contradiction: float
     net: float
     verdict: str
+    status: str = "insufficient_evidence"
+    nli_available: bool = False
+    evidence_count: int = 0
+
+class ClaimAssessment(BaseModel):
+    claim: str
+    status: str
+    verdict: str
+    support: float
+    contradiction: float
+    evidence_count: int
 
 class CheckResponse(BaseModel):
     statement: str
@@ -146,6 +166,8 @@ class CheckResponse(BaseModel):
     evidence_stance: StanceSummary
     combined_score: int
     combined_verdict: str
+    assessment_status: str
+    claim_assessments: list[ClaimAssessment]
     top_evidence: list[EvidenceItem]
     processing_time_seconds: float
 
@@ -153,43 +175,44 @@ class CheckResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # SCORING HELPERS
 # ---------------------------------------------------------------------------
-VERDICT_THRESHOLDS = [
-    (25, "Very Likely False"),
-    (40, "Likely False"),
-    (60, "Uncertain / Mixed"),
-    (75, "Likely True"),
-    (100, "Very Likely True"),
-]
+def evidence_verdict_score(stance: dict) -> int:
+    """A visual evidence balance only; it is not a probability of truth.
 
-"""
-PURPOSE:
-Combines the mathematical ML prediction with the real-world evidence from the web into one final score.
+    The legacy MLP is returned for transparency but is intentionally excluded:
+    it was trained on historical US political statements and is not a reliable
+    universal-news classifier.
+    """
+    if stance.get("status") == "insufficient_evidence":
+        return 50
+    net = max(-1.0, min(1.0, float(stance.get("net", 0.0))))
+    return int(round(max(5, min(95, 50 + 45 * net))))
 
-INPUT:
-ml_score: Float from 0.0 to 1.0 (Output of our Neural Network)
-evidence_score: Float from 0.0 to 1.0 (How relevant the scraped articles are)
-stance_net: Float from -1.0 to 1.0 (-1 means evidence contradicts, 1 means evidence supports)
 
-OUTPUT:
-Integer from 0 to 100.
-"""
-def compute_combined_score(ml_score: float, evidence_score: float, stance_net: float) -> int:
-    # Step 1: Shift the stance_net from [-1, 1] range to [0, 1] range
-    # Example: A stance of -1 (total contradiction) becomes 0. A stance of 1 becomes 1.
-    stance_normalized = (stance_net + 1.0) / 2.0
-    
-    # Step 2: Apply custom weights to blend the signals
-    # We trust the ML model 40%, the relevance of evidence 35%, and whether the evidence supports/contradicts 25%
-    raw = 0.40 * ml_score + 0.35 * evidence_score + 0.25 * stance_normalized
-    
-    # Step 3: Convert to a 100-point scale and cap it between 0 and 100
-    return int(np.clip(raw * 100, 0, 100))
-
-def verdict_label(score: int) -> str:
-    for threshold, label in VERDICT_THRESHOLDS:
-        if score <= threshold:
-            return label
-    return "Very Likely True"
+def merge_claim_summaries(summaries: list[dict]) -> dict:
+    """Use a conservative overall status for multi-claim submissions."""
+    assessed = [summary for summary in summaries if summary.get("status") != "insufficient_evidence"]
+    if not assessed:
+        return {
+            "support": 0.0, "contradiction": 0.0, "net": 0.0,
+            "verdict": "insufficient evidence", "status": "insufficient_evidence",
+            "nli_available": any(summary.get("nli_available") for summary in summaries),
+            "evidence_count": 0,
+        }
+    support = sum(summary["support"] for summary in assessed) / len(assessed)
+    contradiction = sum(summary["contradiction"] for summary in assessed) / len(assessed)
+    net = support - contradiction
+    statuses = {summary["status"] for summary in assessed}
+    if len(statuses) > 1 or "mixed" in statuses:
+        status, verdict = "mixed", "claims have mixed evidence"
+    elif "supported" in statuses:
+        status, verdict = "supported", "evidence supports the claim"
+    else:
+        status, verdict = "contradicted", "evidence contradicts the claim"
+    return {
+        "support": support, "contradiction": contradiction, "net": net,
+        "verdict": verdict, "status": status, "nli_available": True,
+        "evidence_count": sum(summary.get("evidence_count", 0) for summary in assessed),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +225,7 @@ async def health():
         "model_loaded": _model is not None,
         "input_size": _model.input_size if _model else None,
         "threshold": _model.best_threshold if _model else None,
+        "nli": _nli_status,
     }
 
 
@@ -210,11 +234,10 @@ PURPOSE:
 The primary fact-checking logic.
 
 FLOW:
-1. Validates the model is loaded.
-2. Runs the statement through the ML Neural Network to get an `ml_score`.
-3. Scrapes Google/DuckDuckGo for articles and analyzes them to get an `ev_score`.
-4. Blends them using `compute_combined_score`.
-5. Returns a massive JSON object with all the details.
+1. Validates the legacy MLP is loaded and returns its claim-only prior.
+2. Extracts atomic claims, retrieves candidate evidence, and runs NLI.
+3. Abstains if evidence is unavailable, weak, or from unclassified sources.
+4. Returns evidence, claim-level outcomes, and a conservative overall status.
 """
 @app.post("/api/check", response_model=CheckResponse)
 async def check_statement(request: CheckRequest):
@@ -236,26 +259,53 @@ async def check_statement(request: CheckRequest):
     ml_score = float(_model.predict_proba(features)[0])
     ml_verdict = explain_probability(ml_score)
 
-    # --- 2. Evidence Scraping Phase ---
+    # --- 2. Claim extraction and evidence phase ---
+    # A long submission may contain several independently checkable claims.
+    claims = extract_claims(statement, max_claims=3)
+    claim_summaries = []
+    all_evidence = []
     try:
-        # Calls our custom web scraper script
-        ev_score, ev_stance, ev_results = collect_evidence(
-            statement, max_results=12, fetch_articles=True
-        )
+        for claim in claims:
+            _, claim_stance, claim_results = collect_evidence(
+                claim, max_results=8, fetch_articles=True
+            )
+            claim_summaries.append((claim, claim_stance))
+            all_evidence.extend(claim_results)
     except Exception as err:
         print(f"Evidence scraping failed: {err}")
-        ev_score = 0.0
-        ev_stance = {"support": 0.0, "contradiction": 0.0, "net": 0.0, "verdict": "scraping failed"}
-        ev_results = []
+        claim_summaries = [(
+            claim,
+            {
+                "support": 0.0, "contradiction": 0.0, "net": 0.0,
+                "verdict": "insufficient evidence", "status": "insufficient_evidence",
+                "nli_available": False, "evidence_count": 0,
+            },
+        ) for claim in claims]
+        all_evidence = []
 
-    # --- 3. Combined Score Phase ---
-    stance_net = ev_stance.get("net", 0.0)
-    combined = compute_combined_score(ml_score, ev_score, stance_net)
+    ev_stance = merge_claim_summaries([summary for _, summary in claim_summaries])
+    # This is the amount of strong, classified evidence available, not a
+    # similarity score and not a probability that the claim is true.
+    ev_score = min(
+        1.0,
+        (ev_stance["support"] + ev_stance["contradiction"])
+        * min(ev_stance.get("evidence_count", 0) / 2, 1.0),
+    )
+    combined = evidence_verdict_score(ev_stance)
 
     # --- 4. Build Response Phase ---
     top_evidence = []
     # Grab the top 8 pieces of evidence and format them nicely
-    for result in ev_results[:8]:
+    seen_urls = set()
+    ranked_evidence = sorted(
+        all_evidence,
+        key=lambda result: max(result.support_score, result.contradiction_score) * result.source_weight,
+        reverse=True,
+    )
+    for result in ranked_evidence:
+        if result.url in seen_urls:
+            continue
+        seen_urls.add(result.url)
         top_evidence.append(EvidenceItem(
             title=result.title or "",
             url=result.url or "",
@@ -265,7 +315,11 @@ async def check_statement(request: CheckRequest):
             best_sentence=result.best_sentence or "",
             support_score=round(result.support_score, 3),
             contradiction_score=round(result.contradiction_score, 3),
+            source_tier=result.source_tier,
+            nli_available=result.nli_available,
         ))
+        if len(top_evidence) == 8:
+            break
 
     elapsed = round(time.time() - start, 2)
 
@@ -277,7 +331,19 @@ async def check_statement(request: CheckRequest):
         evidence_score=round(ev_score, 4),
         evidence_stance=StanceSummary(**ev_stance),
         combined_score=combined,
-        combined_verdict=verdict_label(combined),
+        combined_verdict=ev_stance["verdict"],
+        assessment_status=ev_stance["status"],
+        claim_assessments=[
+            ClaimAssessment(
+                claim=claim,
+                status=summary["status"],
+                verdict=summary["verdict"],
+                support=round(summary["support"], 4),
+                contradiction=round(summary["contradiction"], 4),
+                evidence_count=summary.get("evidence_count", 0),
+            )
+            for claim, summary in claim_summaries
+        ],
         top_evidence=top_evidence,
         processing_time_seconds=elapsed,
     )

@@ -34,6 +34,8 @@ const evidenceItemSchema = new mongoose.Schema(
     best_sentence: String,       // The specific sentence in the article that best matches the statement
     support_score: Number,       // NLI model's confidence that it supports
     contradiction_score: Number, // NLI model's confidence that it contradicts
+    source_tier: String,         // primary, fact-check, reporting, or unclassified
+    nli_available: Boolean,      // Whether the stance came from the NLI model
   },
   // _id: false tells Mongoose NOT to create a unique ID for every single piece of evidence.
   // We only need an ID for the parent Check document.
@@ -89,6 +91,18 @@ const checkSchema = new mongoose.Schema(
     
     // The final text label shown to the user (e.g., "Very Likely False")
     combinedVerdict: String,
+
+    // Evidence-first assessment metadata.  This lets saved results preserve
+    // an explicit abstention instead of looking like a numerical verdict.
+    assessmentStatus: String,
+    claimAssessments: [{
+      claim: String,
+      status: String,
+      verdict: String,
+      support: Number,
+      contradiction: Number,
+      evidenceCount: Number,
+    }],
     
     // An array of the top evidence articles found (uses the sub-schema defined above)
     topEvidence: [evidenceItemSchema],

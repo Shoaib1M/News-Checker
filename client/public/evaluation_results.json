@@ -1790,7 +1790,7 @@
       "training": "70 epochs, mini-batch SGD (batch=128), threshold-tuned on validation set",
       "classes": "2 (binary)",
       "threshold": 0.53,
-      "is_production": true
+      "is_production": false
     }
   }
 }

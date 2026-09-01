@@ -31,6 +31,7 @@ import time
 import numpy as np
 
 from tfidf import TFIDFVectorizer
+from claim_verifier import NLIScorer, classify_source
 
 # ---------------------------------------------------------------------------
 # CONSTANTS & CONFIGURATIONS
@@ -123,6 +124,24 @@ class EvidenceResult:
     contradiction_score: float
     stance: str
     best_sentence: str
+    source_tier: str = "unclassified"
+    source_weight: float = 0.0
+    nli_available: bool = False
+
+
+# Loaded lazily only after relevant passages have been found.  The app abstains
+# when this model is unavailable rather than treating lexical overlap as proof.
+_nli_scorer = NLIScorer()
+
+
+def warm_evidence_model():
+    """Try to load the NLI model during startup without making startup fatal."""
+    _nli_scorer._load()
+    return {
+        "available": _nli_scorer._pipeline is not None,
+        "model": _nli_scorer.model_name,
+        "error": _nli_scorer.error,
+    }
 
 # ---------------------------------------------------------------------------
 # HTML PARSERS
@@ -773,8 +792,8 @@ def score_sentence_stance(claim, sentence):
 
     return max(0.0, min(support, 1.0)), max(0.0, min(contradiction, 1.0)), relevance
 
-def score_document_stance(statement, document):
-    """Scores an entire article by finding its most relevant sentences."""
+def _candidate_passages(statement, document, limit=8):
+    """Use lexical overlap solely to select passages for the NLI model."""
     title = document.get("title", "")
     snippet = document.get("snippet", "")
     text = document.get("text", "")
@@ -787,27 +806,37 @@ def score_document_stance(statement, document):
     for sentence in split_sentences(text):
         sentences.append((sentence, 1.0))
 
-    if not sentences: return 0.0, 0.0, ""
+    ranked = [
+        (sentence_relevance(statement, sentence) * weight, sentence)
+        for sentence, weight in sentences
+    ]
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [sentence for relevance, sentence in ranked[:limit] if relevance >= 0.12]
 
-    scored_sentences = []
-    for sentence, weight in sentences:
-        support, contradiction, relevance = score_sentence_stance(statement, sentence)
-        scored_sentences.append((support, contradiction, relevance, sentence, weight))
 
-    # Sort by the strongest signal per sentence
-    scored_sentences.sort(
-        key=lambda item: max(item[0], item[1], item[2]) * item[4],
-        reverse=True,
+def score_document_stance(statement, document):
+    """Score a document with NLI; keyword rules no longer determine a stance."""
+    passages = _candidate_passages(statement, document)
+    if not passages:
+        return 0.0, 0.0, "", False
+
+    nli_scores = _nli_scorer.score_many(statement, passages)
+    if not nli_scores or not nli_scores[0].get("available"):
+        return 0.0, 0.0, passages[0], False
+
+    candidates = []
+    for passage, nli_score in zip(passages, nli_scores):
+        # A passage must discuss the claim enough to be eligible, but relevance
+        # is never itself a truth signal.
+        relevance = sentence_relevance(statement, passage)
+        support = nli_score["entailment"] * (0.60 + 0.40 * relevance)
+        contradiction = nli_score["contradiction"] * (0.60 + 0.40 * relevance)
+        candidates.append((support, contradiction, passage))
+
+    support, contradiction, best_sentence = max(
+        candidates, key=lambda item: max(item[0], item[1])
     )
-    top_sentences = scored_sentences[:5]
-
-    # Weighted average instead of raw max — reduces noise from one outlier sentence
-    total_weight = sum(item[4] for item in top_sentences)
-    support = sum(item[0] * item[4] for item in top_sentences) / total_weight
-    contradiction = sum(item[1] * item[4] for item in top_sentences) / total_weight
-    best_sentence = max(top_sentences, key=lambda item: max(item[0], item[1]))[3]
-
-    return support, contradiction, best_sentence
+    return support, contradiction, best_sentence, True
 
 def stance_label(support, contradiction):
     """Converts the raw support/contradiction numbers into a human-readable label."""
@@ -817,19 +846,8 @@ def stance_label(support, contradiction):
     if margin <= -0.06: return "contradicts"
     return "mixed"
 
-def source_credibility_boost(url):
-    """Returns a small multiplier boost for known credible domains (like Reuters or BBC)."""
-    try:
-        netloc = urlparse(url).netloc.lower().lstrip("www.")
-        for domain in CREDIBLE_DOMAINS:
-            if netloc == domain or netloc.endswith("." + domain):
-                return 1.15
-    except Exception:
-        pass
-    return 1.0
-
 def rank_by_similarity(statement, documents):
-    """Sorts all the scraped articles based on how closely they match the claim."""
+    """Rank evidence by verified NLI signal and source tier, not similarity."""
     texts = [statement]
     for document in documents:
         article_preview = " ".join(document.get("text", "").split()[:500])
@@ -861,12 +879,11 @@ def rank_by_similarity(statement, documents):
         coverage_score = keyword_coverage(statement, combined_text)
         title_coverage = keyword_coverage(statement, document.get("title", ""))
         
-        # Blend the signals
+        # Similarity only chooses candidate text and is shown as relevance.
         similarity = (0.35 * tfidf_score) + (0.45 * coverage_score) + (0.20 * title_coverage)
-        similarity = min(similarity * source_credibility_boost(document.get("url", "")), 1.0)
 
-        # Get stance (Support vs Contradiction)
-        support_score, contradiction_score, best_sentence = score_document_stance(statement, document)
+        support_score, contradiction_score, best_sentence, nli_available = score_document_stance(statement, document)
+        source_profile = classify_source(document.get("url", ""))
         
         ranked.append(EvidenceResult(
             url=document["url"],
@@ -878,27 +895,53 @@ def rank_by_similarity(statement, documents):
             source=document.get("source", ""),
             support_score=support_score,
             contradiction_score=contradiction_score,
-            stance=stance_label(support_score, contradiction_score),
+            stance=(stance_label(support_score, contradiction_score) if nli_available else "unverified"),
             best_sentence=best_sentence,
+            source_tier=source_profile.tier,
+            source_weight=source_profile.weight,
+            nli_available=nli_available,
         ))
 
-    # Sort them so the most similar article is at index 0
-    return sorted(ranked, key=lambda result: result.similarity, reverse=True)
+    return sorted(
+        ranked,
+        key=lambda result: max(result.support_score, result.contradiction_score) * result.source_weight,
+        reverse=True,
+    )
 
 def evidence_score(results, top_k=5):
-    """Calculates one final 'Relevance Score' for the entire evidence collection."""
-    if not results: return 0.0
-    top_results = results[:top_k]
-    # Weight the top result higher than the 5th result
-    weights = np.array([1 / (index + 1) for index in range(len(top_results))])
-    similarities = np.array([result.similarity for result in top_results])
-    return float(np.sum(similarities * weights) / np.sum(weights))
+    """Return verified-evidence coverage, not similarity to search results."""
+    verified = [
+        result for result in results
+        if result.nli_available and result.source_weight >= 0.8
+        and result.similarity >= 0.12
+    ][:top_k]
+    if not verified:
+        return 0.0
+    weights = np.array([result.source_weight / (index + 1) for index, result in enumerate(verified)])
+    strength = np.array([max(result.support_score, result.contradiction_score) for result in verified])
+    return float(np.sum(strength * weights) / np.sum(weights))
 
 def stance_summary(results, top_k=5):
-    """Summarizes the stance of all the articles combined."""
-    relevant_results = [result for result in results if result.similarity >= 0.25]
-    if not relevant_results:
-        return {"support": 0.0, "contradiction": 0.0, "net": 0.0, "verdict": "not enough relevant evidence"}
+    """Aggregate only strong NLI judgments from classified sources."""
+    relevant_results = [
+        result for result in results
+        if result.nli_available
+        and result.source_weight >= 0.8
+        and result.similarity >= 0.12
+        and max(result.support_score, result.contradiction_score) >= 0.55
+    ]
+    high_authority = any(
+        result.source_tier in {"primary", "fact-check"}
+        and max(result.support_score, result.contradiction_score) >= 0.80
+        for result in relevant_results
+    )
+    if not relevant_results or (len(relevant_results) < 2 and not high_authority):
+        return {
+            "support": 0.0, "contradiction": 0.0, "net": 0.0,
+            "verdict": "insufficient evidence", "status": "insufficient_evidence",
+            "nli_available": any(result.nli_available for result in results),
+            "evidence_count": len(relevant_results),
+        }
 
     top_results = relevant_results[:top_k]
     weights = np.array([
@@ -914,16 +957,21 @@ def stance_summary(results, top_k=5):
     contradiction = float(np.sum(contradiction_scores * weights) / np.sum(weights))
     net = support - contradiction
 
-    if max(support, contradiction) < 0.10: verdict = "not enough stance evidence"
-    elif net >= 0.06: verdict = "evidence mostly supports the claim"
-    elif net <= -0.06: verdict = "evidence mostly contradicts the claim"
-    else: verdict = "evidence is mixed"
+    if abs(net) < 0.06:
+        verdict, status = "evidence is mixed", "mixed"
+    elif net > 0:
+        verdict, status = "evidence supports the claim", "supported"
+    else:
+        verdict, status = "evidence contradicts the claim", "contradicted"
 
     return {
         "support": support,
         "contradiction": contradiction,
         "net": net,
         "verdict": verdict,
+        "status": status,
+        "nli_available": True,
+        "evidence_count": len(top_results),
     }
 
 # ---------------------------------------------------------------------------
@@ -933,6 +981,17 @@ def stance_summary(results, top_k=5):
 def collect_duckduckgo_evidence(statement, max_results=15, fetch_articles=True):
     """Fallback orchestrator using DuckDuckGo."""
     search_results = search_web(statement, max_results=max_results)
+
+    # Ask explicitly for independent verification, not only reporting that may
+    # repeat the original assertion.  Source classification still gates any
+    # effect on the final verdict.
+    try:
+        verification_results = search_web_raw(
+            f"{build_search_query(statement)} fact check", max_results=max_results // 2
+        )
+        search_results = dedupe_search_results(search_results + verification_results)
+    except Exception:
+        pass
 
     opposite_query = build_opposite_search_query(statement)
     if opposite_query:

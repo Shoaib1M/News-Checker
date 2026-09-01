@@ -78,7 +78,10 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
           ) : (
             /* Filled State */
             history.map((item) => {
-              const colors = getScoreColor(item.combinedScore);
+              const isUnverified = item.assessmentStatus === "insufficient_evidence";
+              const colors = isUnverified
+                ? { bg: "#f1f5f9", color: "#64748b" }
+                : getScoreColor(item.combinedScore);
               return (
                 <div
                   className="history-item"
@@ -89,7 +92,7 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
                     className="history-score-badge"
                     style={{ background: colors.bg, color: colors.color }}
                   >
-                    {item.combinedScore}
+                    {isUnverified ? "—" : item.combinedScore}
                   </div>
                   <div className="history-item-content">
                     <div className="history-statement">{item.statement}</div>

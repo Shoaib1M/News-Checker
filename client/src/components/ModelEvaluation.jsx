@@ -55,8 +55,10 @@ export default function ModelEvaluation() {
         <p className="intro-tag">Model Performance · LIAR Test Set ({dataset.test_size} samples)</p>
         <h2 className="intro-heading">Model Evaluation</h2>
         <p className="intro-desc">
-          Real metrics computed on the LIAR test set — not cherry-picked.
-          Every number here is reproducible by running <code>evaluate_models.py</code>.
+          These are metadata-assisted LIAR research metrics, not general-news
+          production accuracy. The statement-only production-equivalent MLP is
+          61.8% accurate and is shown in checks only as an experimental prior.
+          Run <code>evaluate_models.py</code> and <code>evaluate_production_model.py</code> to reproduce both views.
         </p>
       </section>
 
@@ -135,7 +137,7 @@ export default function ModelEvaluation() {
               <Grid2x2 className="eval-icon" size={20} /> Confusion Matrix
             </h3>
             <div className="eval-cm-toggle">
-              {Object.entries(models).map(([key, m]) => (
+              {Object.entries(models).map(([key]) => (
                 <button
                   key={key}
                   className={`eval-cm-btn ${cmView === key ? "active" : ""}`}
@@ -159,7 +161,7 @@ export default function ModelEvaluation() {
               <TrendingUp className="eval-icon" size={20} /> ROC Curve
               <span className="eval-auc-badge">AUC = {model.auc}</span>
             </h3>
-            <ROCCurve points={model.roc_curve} auc={model.auc} />
+            <ROCCurve points={model.roc_curve} />
             {model.threshold && (
               <p className="eval-threshold-note">
                 Decision threshold: <strong>{model.threshold}</strong>
@@ -319,7 +321,7 @@ function ConfusionMatrix({ matrix, labels }) {
 PURPOSE: Manually draws an ROC (Receiver Operating Characteristic) curve using SVG paths.
 WHY THIS EXISTS: ROC curves show if the model is better than random guessing (the diagonal line).
 */
-function ROCCurve({ points, auc }) {
+function ROCCurve({ points }) {
   const width = 300;
   const height = 300;
   const pad = 40;

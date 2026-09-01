@@ -17,21 +17,21 @@ to know *why* the AI gave that score.
 export default function ScoreBreakdown({ mlScore, evidenceScore, stanceNet }) {
   const items = [
     {
-      label: "ML Model",
+      label: "Claim prior",
       value: Math.round(mlScore * 100),
-      tooltip: "Confidence from the trained neural network",
+      tooltip: "Experimental US-political claim prior; it does not determine the verdict",
     },
     {
-      label: "Evidence",
+      label: "Verified evidence",
       value: Math.round(evidenceScore * 100),
-      tooltip: "Similarity to scraped web evidence",
+      tooltip: "Strength and coverage of NLI-checked evidence from classified sources",
     },
     {
-      label: "Stance",
+      label: "Evidence direction",
       // Stance is usually a number between -1 (Contradicts) and 1 (Supports).
       // We normalize it to a 0-100 scale here so it visually matches the other bars.
       value: Math.round(((stanceNet + 1) / 2) * 100),
-      tooltip: "Whether evidence supports or contradicts the claim",
+      tooltip: "Whether NLI-checked evidence supports or contradicts the claim",
     },
   ];
 

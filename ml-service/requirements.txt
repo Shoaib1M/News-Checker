@@ -3,3 +3,5 @@ uvicorn[standard]
 python-dotenv
 numpy
 pandas
+transformers>=4.45,<5
+torch>=2.2

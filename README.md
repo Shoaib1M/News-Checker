@@ -32,29 +32,35 @@ The application is split into three distinct layers:
 
 ## 🧮 How the Scoring Works
 
-The final credibility score (0-100) is a weighted combination of three signals:
-*   **40% ML Confidence:** The raw sigmoid probability output from the custom-built neural network.
-*   **35% Evidence Similarity:** The cosine similarity between the user's claim and the text of the scraped articles.
-*   **25% Evidence Stance:** A calculated score representing whether the overall tone of the scraped articles supports or contradicts the claim.
+The checker now uses an evidence-first process:
+*   **Claim extraction:** A multi-sentence submission is split into separately checkable claims.
+*   **Evidence retrieval:** Search results locate candidate passages, including verification-focused queries.
+*   **NLI verification:** A claim–evidence natural-language-inference model judges whether a passage entails, contradicts, or is neutral toward a claim.
+*   **Conservative verdicts:** Only strong NLI judgments from classified primary, fact-checking, or reputable reporting sources can produce a verdict. Otherwise the result is **Insufficient evidence**.
+
+The legacy LIAR MLP remains visible as an experimental US-political claim prior. It is not used to determine the final verdict, since production submissions do not include the historical speaker metadata used in its original evaluation.
 
 ## 📊 Model Performance
 
 The custom **Binary Truth MLP** was trained on the challenging **LIAR dataset** (12,836 labelled political statements). To maximize real-world utility, the standard 6-class labels were collapsed into a binary "Fake-ish" vs "True-ish" classification.
 
-### 🏆 Outperforming the Baseline
-A standard Logistic Regression model on this dataset achieved **56.35%** accuracy. 
-Our custom-built Neural Network with engineered features achieved a **~28% relative performance increase**:
+### ⚠️ Legacy-model evaluation
 
-*   **Accuracy:** 72.38% *(+16.03% over baseline)*
-*   **Precision:** 78.09% 
-*   **Recall:** 70.87%
-*   **F1 Score:** 0.743
-*   **AUC:** 0.7794
+The earlier **72.38%** result is a metadata-assisted LIAR test score: it uses the
+speaker's historical truth counts, party, job, and context. It must not be
+shown as the production model's performance.
 
-### 🧠 Architectural Advantages
-*   **Dynamic Thresholding:** Rather than using a naive 0.5 decision boundary, the sigmoid threshold is dynamically tuned on the validation set (currently optimized at **0.53**) to maximize accuracy.
-*   **Engineered Features:** It doesn't just look at text; the vector space is augmented with the speaker's historical truth-counts, party affiliation, and job title.
-*   **Production Blending:** The 72% base accuracy of the isolated ML model is heavily augmented in production by the live web evidence similarity and stance detection, pushing the final system accuracy significantly higher.
+The production-equivalent, statement-only evaluation is currently:
+
+*   **Accuracy:** 61.80%
+*   **Precision:** 64.52%
+*   **Recall:** 71.57%
+*   **F1 Score:** 0.6786
+*   **Brier score:** 0.2300
+
+This is deliberately treated as a legacy US-political prior, not an accuracy
+claim for general news. The final application verdict comes from retrieved,
+classified NLI evidence and abstains when that evidence is insufficient.
 
 ## 💻 Local Development Setup
 
@@ -73,6 +79,19 @@ pip install -r requirements.txt
 python main.py
 ```
 *The FastAPI server will start on `http://localhost:8000`*
+
+Before publishing an MLP accuracy number, run its production-equivalent
+evaluation (the API only receives statement text):
+```bash
+cd ml-service
+python evaluate_production_model.py
+python -m unittest discover -s tests -v
+```
+
+The first service start downloads the NLI model configured by `NLI_MODEL`
+(default: `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`). If it cannot be
+loaded, the API deliberately returns **Insufficient evidence** rather than
+falling back to keyword-based truth labels.
 
 ### 2. Start the Node.js Server
 ```bash

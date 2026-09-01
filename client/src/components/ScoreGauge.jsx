@@ -28,7 +28,7 @@ function getStrokeColor(score) {
   return "#059669"; // Dark Green
 }
 
-export default function ScoreGauge({ score, verdict }) {
+export default function ScoreGauge({ score, assessmentStatus }) {
   const [displayScore, setDisplayScore] = useState(0);
   const [offset, setOffset] = useState(CIRCUMFERENCE); // Start fully empty
   const animationRef = useRef(null);
@@ -67,7 +67,8 @@ export default function ScoreGauge({ score, verdict }) {
     };
   }, [score]);
 
-  const color = getStrokeColor(score);
+  const isInsufficient = assessmentStatus === "insufficient_evidence";
+  const color = isInsufficient ? "#64748b" : getStrokeColor(score);
 
   return (
     <div className="gauge-container" id="score-gauge">
@@ -89,9 +90,11 @@ export default function ScoreGauge({ score, verdict }) {
       </svg>
       <div className="gauge-score-text">
         <div className="gauge-number" style={{ color }}>
-          {displayScore}
+          {isInsufficient ? "—" : displayScore}
         </div>
-        <div className="gauge-label">out of 100</div>
+        <div className="gauge-label">
+          {isInsufficient ? "unverified" : "evidence balance"}
+        </div>
       </div>
     </div>
   );
