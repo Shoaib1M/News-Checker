@@ -42,6 +42,7 @@ from binary_truth_mlp import (
 )
 from claim_verifier import extract_claims
 from evidence_scraper import collect_evidence, load_env_file
+from knowledge_verifier import assess_claim
 
 # ---------------------------------------------------------------------------
 # GLOBAL STATE
@@ -165,6 +166,10 @@ class CheckResponse(BaseModel):
     claim_assessments: list[ClaimAssessment]
     top_evidence: list[EvidenceItem]
     processing_time_seconds: float
+    claim_type: str = "general factual"
+    confidence: str = "low"
+    reasoning: str = ""
+    external_evidence_available: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -259,30 +264,42 @@ async def check_statement(request: CheckRequest):
     # Ask the Neural Network for its prediction (returns a 0 to 1 probability)
     ml_score = float(_model.predict_proba(features)[0])
     ml_verdict = explain_probability(ml_score)
+    knowledge_assessment = assess_claim(statement)
 
     # --- 2. Claim extraction and evidence phase ---
     # A long submission may contain several independently checkable claims.
     claims = extract_claims(statement, max_claims=3)
     claim_summaries = []
     all_evidence = []
-    try:
-        for claim in claims:
-            _, claim_stance, claim_results = collect_evidence(
-                claim, max_results=8, fetch_articles=True
-            )
-            claim_summaries.append((claim, claim_stance))
-            all_evidence.extend(claim_results)
-    except Exception as err:
-        print(f"Evidence scraping failed: {err}")
-        claim_summaries = [(
-            claim,
-            {
-                "support": 0.0, "contradiction": 0.0, "net": 0.0,
-                "verdict": "insufficient evidence", "status": "insufficient_evidence",
-                "nli_available": False, "evidence_count": 0,
-            },
-        ) for claim in claims]
-        all_evidence = []
+    if knowledge_assessment:
+        status = knowledge_assessment["status"]
+        support = 1.0 if status == "supported" else 0.0
+        contradiction = 1.0 if status == "contradicted" else 0.0
+        claim_summaries = [(statement, {
+            "support": support, "contradiction": contradiction,
+            "net": support - contradiction,
+            "verdict": knowledge_assessment["verdict"],
+            "status": status, "nli_available": False, "evidence_count": 0,
+        })]
+    else:
+        try:
+            for claim in claims:
+                _, claim_stance, claim_results = collect_evidence(
+                    claim, max_results=8, fetch_articles=True
+                )
+                claim_summaries.append((claim, claim_stance))
+                all_evidence.extend(claim_results)
+        except Exception as err:
+            print(f"Evidence scraping failed: {err}")
+            claim_summaries = [(
+                claim,
+                {
+                    "support": 0.0, "contradiction": 0.0, "net": 0.0,
+                    "verdict": "insufficient evidence", "status": "insufficient_evidence",
+                    "nli_available": False, "evidence_count": 0,
+                },
+            ) for claim in claims]
+            all_evidence = []
 
     ev_stance = merge_claim_summaries([summary for _, summary in claim_summaries])
     # This is the amount of strong, classified evidence available, not a
@@ -293,6 +310,9 @@ async def check_statement(request: CheckRequest):
         * min(ev_stance.get("evidence_count", 0) / 2, 1.0),
     )
     combined = evidence_verdict_score(ev_stance)
+    combined_verdict = (
+        knowledge_assessment["verdict"] if knowledge_assessment else ev_stance["verdict"]
+    )
 
     # --- 4. Build Response Phase ---
     top_evidence = []
@@ -332,7 +352,7 @@ async def check_statement(request: CheckRequest):
         evidence_score=round(ev_score, 4),
         evidence_stance=StanceSummary(**ev_stance),
         combined_score=combined,
-        combined_verdict=ev_stance["verdict"],
+        combined_verdict=combined_verdict,
         assessment_status=ev_stance["status"],
         claim_assessments=[
             ClaimAssessment(
@@ -347,6 +367,15 @@ async def check_statement(request: CheckRequest):
         ],
         top_evidence=top_evidence,
         processing_time_seconds=elapsed,
+        claim_type=knowledge_assessment["claim_type"] if knowledge_assessment else "general factual",
+        confidence=knowledge_assessment["confidence"] if knowledge_assessment else (
+            "high" if ev_stance["status"] == "supported" and ev_stance["evidence_count"] >= 2
+            else "low"
+        ),
+        reasoning=knowledge_assessment["reasoning"] if knowledge_assessment else (
+            "The result is based on retrieved evidence; no deterministic knowledge rule applied."
+        ),
+        external_evidence_available=bool(all_evidence),
     )
 
 

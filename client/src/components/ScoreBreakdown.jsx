@@ -17,14 +17,14 @@ to know *why* the AI gave that score.
 export default function ScoreBreakdown({ mlScore, evidenceScore, stanceNet }) {
   const items = [
     {
-      label: "Claim prior",
+      label: "Model signal",
       value: Math.round(mlScore * 100),
-      tooltip: "Experimental US-political claim prior; it does not determine the verdict",
+      tooltip: "A legacy learned signal; it is never used alone as proof",
     },
     {
-      label: "Verified evidence",
+      label: "External evidence",
       value: Math.round(evidenceScore * 100),
-      tooltip: "Strength and coverage of NLI-checked evidence from classified sources",
+      tooltip: "Strength and coverage of retrieved evidence",
     },
     {
       label: "Evidence direction",

@@ -1,7 +1,7 @@
 /*
 FILE PURPOSE:
 An interactive "How it Works" page that acts as a technical blog post or whitepaper.
-It explains the entire pipeline from Dataset -> TF-IDF -> Neural Net -> Evidence Scraping -> Scoring.
+It explains the hybrid pipeline from claim understanding to evidence-aware results.
 
 FLOW:
 1. Defines the pipeline steps in a large data array (`PIPELINE_STEPS`).
@@ -33,8 +33,8 @@ const PIPELINE_STEPS = [
   {
     id: "dataset",
     icon: <Package className="hiw-step-icon" />,
-    title: "LIAR Dataset",
-    short: "10K+ labelled political statements",
+    title: "Claim understanding",
+    short: "Identify type, scope, and verifiability",
     detail: `The LIAR dataset (Wang, 2017) contains 12,836 short political statements from PolitiFact, 
 each labelled by professional fact-checkers as one of six truthfulness levels: pants-fire, false, 
 barely-true, half-true, mostly-true, and true.
@@ -49,8 +49,8 @@ Split: 10,240 training · 1,284 validation · 1,267 test samples.`,
   {
     id: "features",
     icon: <FileText className="hiw-step-icon" />,
-    title: "TF-IDF Vectorization",
-    short: "Convert text to numerical features",
+    title: "Deterministic checks",
+    short: "Use calculations and rules for clear facts",
     detail: `We built a custom TF-IDF (Term Frequency–Inverse Document Frequency) vectorizer from scratch — 
 no scikit-learn. It generates unigram + bigram features with a minimum document frequency of 2.
 
@@ -65,8 +65,8 @@ min-max normalisation. The final feature vector is [TF-IDF features | history fe
   {
     id: "model",
     icon: <Brain className="hiw-step-icon" />,
-    title: "MLP Neural Network",
-    short: "1 hidden layer, 64 neurons, ReLU + sigmoid",
+    title: "Learned signal",
+    short: "A limited prior, never the sole verdict",
     detail: `The Binary Truth MLP is a fully-connected neural network built from scratch in NumPy 
 (no PyTorch/TensorFlow):
 
@@ -87,8 +87,8 @@ can explain every line of the training loop.`,
   {
     id: "classification",
     icon: <CheckCircle2 className="hiw-step-icon" />,
-    title: "Binary Classification",
-    short: "Fake-ish vs True-ish with tuned threshold",
+    title: "Verdict and confidence",
+    short: "True, false, nuanced, uncertain, or subjective",
     detail: `The sigmoid output gives a probability between 0 and 1. Rather than using the standard 
 0.5 threshold, we sweep thresholds from 0.30 to 0.70 on the validation set and pick the one 
 that maximises accuracy.
@@ -102,8 +102,8 @@ This tuned threshold typically lands around 0.45–0.55, and the small adjustmen
   {
     id: "evidence",
     icon: <Globe className="hiw-step-icon" />,
-    title: "Evidence Scraping",
-    short: "Multi-source web scraping + stance detection",
+    title: "External evidence",
+    short: "Targeted retrieval for current or unclear claims",
     detail: `The ML model alone isn't enough — so we scrape the web in real time for corroborating or 
 contradicting evidence:
 
@@ -122,26 +122,16 @@ the net balance across all sources.`,
   {
     id: "scoring",
     icon: <Target className="hiw-step-icon" />,
-    title: "Combined Score",
-    short: "40% ML + 35% evidence + 25% stance → 0–100",
-    detail: `The final credibility score blends three signals:
+    title: "Evidence-aware result",
+    short: "Explain verdict, confidence, evidence, and limits",
+    detail: `The result keeps separate:
 
-Formula: score = 40% × ML_confidence + 35% × evidence_similarity + 25% × stance_net
+• the verdict: what the system believes
+• confidence: how strong the available signals are
+• evidence: which sources support or contradict it
+• limitations: what could make the result uncertain
 
-Where:
-• ML_confidence: the model's sigmoid output (0–1)
-• evidence_similarity: average cosine similarity of top evidence articles (0–1)
-• stance_net: (support - contradiction) normalised from [-1,1] to [0,1]
-
-The raw score is scaled to 0–100 and mapped to a verdict:
-• 0–25:  Very Likely False
-• 26–40: Likely False
-• 41–60: Uncertain / Mixed
-• 61–75: Likely True
-• 76–100: Very Likely True
-
-This weighted approach means: even if the ML model is uncertain, strong web evidence 
-supporting the claim can push the score up — and vice versa.`,
+No search result is treated as proof that a claim is false.`,
   },
 ];
 

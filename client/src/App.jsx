@@ -311,13 +311,13 @@ function App() {
     <>
       {/* Intro */}
       <section className="intro">
-        <p className="intro-tag">Built on the LIAR dataset · MLP + live web evidence</p>
+        <p className="intro-tag">Hybrid claim verification · reasoning + targeted evidence</p>
         <h2 className="intro-heading">
           Paste a claim. I'll tell you if it holds up.
         </h2>
         <p className="intro-desc">
-          My model scores the statement, then I scrape the web for supporting
-          or contradicting evidence and combine both into a single credibility score.
+          I identify the claim type, apply reliable checks where possible, and use
+          external evidence when the claim needs fresh or independent verification.
         </p>
       </section>
 
@@ -394,11 +394,15 @@ function App() {
               <p className="verdict-statement">
                 "{result.statement}"
               </p>
-              {result.assessment_status === "insufficient_evidence" && (
+              {result.reasoning && (
                 <p className="assessment-note">
-                  No verdict was made: there is not enough classified, NLI-checked evidence yet.
+                  {result.reasoning}
                 </p>
               )}
+              <p className="assessment-note">
+                {result.claim_type} · {result.confidence} confidence
+                {result.external_evidence_available ? " · external evidence checked" : " · no external evidence required"}
+              </p>
               <ScoreBreakdown
                 mlScore={result.ml_score}
                 evidenceScore={result.evidence_score}
@@ -442,8 +446,8 @@ function App() {
 
       <footer className="app-footer">
         <p>
-          Built by Shoaib — MLP trained on the LIAR dataset ·
-          Evidence scraped in real time via DuckDuckGo, GNews, Guardian &amp; NewsAPI
+          Built by Shoaib — deterministic checks for clear facts, with external evidence
+          for claims that require it
         </p>
       </footer>
 
