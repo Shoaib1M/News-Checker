@@ -41,7 +41,7 @@ from binary_truth_mlp import (
     make_prediction_features,
 )
 from claim_verifier import extract_claims
-from evidence_scraper import collect_evidence, load_env_file, warm_evidence_model
+from evidence_scraper import collect_evidence, load_env_file
 
 # ---------------------------------------------------------------------------
 # GLOBAL STATE
@@ -51,7 +51,7 @@ from evidence_scraper import collect_evidence, load_env_file, warm_evidence_mode
 _model = None
 _vectorizer = None
 _train_max_values = None
-_nli_status = {"available": False, "model": None, "error": "not initialized"}
+_nli_status = {"available": False, "model": None, "error": "loaded lazily on the first evidence check"}
 
 """
 PURPOSE:
@@ -63,7 +63,7 @@ read the `.pkl` file from the hard drive into RAM so it's ready to instantly ser
 """
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _model, _vectorizer, _train_max_values, _nli_status
+    global _model, _vectorizer, _train_max_values
 
     # Step 1: Locate the trained model file
     model_path = SERVICE_DIR / "binary_truth_mlp.pkl"
@@ -87,11 +87,6 @@ async def lifespan(app: FastAPI):
 
     # Step 3: Load API keys for the web scraper
     load_env_file()
-    _nli_status = warm_evidence_model()
-    if _nli_status["available"]:
-        print(f"NLI evidence model ready — {_nli_status['model']}")
-    else:
-        print("NLI evidence model unavailable; checks will abstain until it is available.")
 
     # Yield hands control back to FastAPI to start accepting requests
     yield  

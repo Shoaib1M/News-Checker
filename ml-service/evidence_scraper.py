@@ -133,16 +133,6 @@ class EvidenceResult:
 # when this model is unavailable rather than treating lexical overlap as proof.
 _nli_scorer = NLIScorer()
 
-
-def warm_evidence_model():
-    """Try to load the NLI model during startup without making startup fatal."""
-    _nli_scorer._load()
-    return {
-        "available": _nli_scorer._pipeline is not None,
-        "model": _nli_scorer.model_name,
-        "error": _nli_scorer.error,
-    }
-
 # ---------------------------------------------------------------------------
 # HTML PARSERS
 # ---------------------------------------------------------------------------

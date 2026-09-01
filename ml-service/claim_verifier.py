@@ -96,7 +96,7 @@ class NLIScorer:
 
     def __init__(self, pipeline_factory: Callable | None = None, model_name: str | None = None):
         self.model_name = model_name or os.getenv(
-            "NLI_MODEL", "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli"
+            "NLI_MODEL", "cross-encoder/nli-deberta-v3-small"
         )
         self._pipeline_factory = pipeline_factory
         self._pipeline = None

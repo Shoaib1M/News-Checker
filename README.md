@@ -88,8 +88,10 @@ python evaluate_production_model.py
 python -m unittest discover -s tests -v
 ```
 
-The first service start downloads the NLI model configured by `NLI_MODEL`
-(default: `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`). If it cannot be
+The first evidence check downloads the NLI model configured by `NLI_MODEL`
+(default: `cross-encoder/nli-deberta-v3-small`). The Docker deployment uses a
+CPU-only PyTorch wheel and conservative thread limits so it fits on a 512 MB
+Render instance. If the NLI model cannot be
 loaded, the API deliberately returns **Insufficient evidence** rather than
 falling back to keyword-based truth labels.
 
