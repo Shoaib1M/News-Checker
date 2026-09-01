@@ -213,6 +213,12 @@ def merge_claim_summaries(summaries: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 # API ENDPOINTS
 # ---------------------------------------------------------------------------
+@app.get("/")
+async def root():
+    """Render's default probe endpoint."""
+    return {"status": "ok", "service": "newschecker-ml"}
+
+
 @app.get("/api/health")
 async def health():
     return {
