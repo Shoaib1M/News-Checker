@@ -468,11 +468,28 @@
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex: 1;
+}
+
+.evidence-source-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
 .evidence-favicon { width: 14px; height: 14px; border-radius: 2px; }
 
-.evidence-domain { font-size: 0.75rem; color: var(--gray-400); }
+.evidence-domain { 
+  font-size: 0.75rem; 
+  color: var(--gray-600);
+  font-weight: 500;
+}
+
+.evidence-tier { 
+  font-size: 0.65rem; 
+  color: var(--gray-400);
+  font-weight: 400;
+}
 
 .stance-badge {
   padding: 0.15rem 0.5rem;
@@ -487,54 +504,87 @@
 .stance-badge.mixed       { background: var(--amber-bg); color: var(--amber); }
 .stance-badge.unclear     { background: var(--gray-100); color: var(--gray-500); }
 
-.evidence-link {
-  font-size: 0.88rem;
-  font-weight: 600;
-  color: var(--gray-800);
-  display: block;
-  margin-bottom: 0.4rem;
-  line-height: 1.4;
-  text-decoration: none;
-}
-.evidence-link:hover { color: var(--purple); text-decoration: none; }
-
-.evidence-similarity {
+/* Strength indicator replaces similarity */
+.evidence-strength {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   margin-bottom: 0.4rem;
 }
 
-.similarity-label { font-size: 0.72rem; color: var(--gray-400); min-width: 40px; }
+.strength-label { 
+  font-size: 0.72rem; 
+  color: var(--gray-400); 
+  min-width: 50px;
+  font-weight: 500;
+}
 
-.similarity-bar-track {
+.strength-bar-track {
   flex: 1;
-  height: 3px;
+  height: 4px;
   background: var(--gray-200);
   border-radius: 99px;
   overflow: hidden;
   max-width: 100px;
 }
 
-.similarity-bar-fill {
+.strength-bar-fill {
   height: 100%;
   border-radius: 99px;
-  background: var(--purple);
   transition: width 0.6s ease-out;
 }
+.strength-bar-fill.support { background: var(--green); }
+.strength-bar-fill.contradiction { background: var(--red); }
 
-.similarity-value { font-size: 0.72rem; font-weight: 600; color: var(--purple); }
+.strength-value { 
+  font-size: 0.72rem; 
+  font-weight: 600; 
+  color: var(--gray-600);
+  min-width: 25px;
+  text-align: right;
+}
 
-.evidence-quote {
-  font-size: 0.82rem;
+/* Passage highlighting */
+.evidence-passage {
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  background: var(--gray-50);
+  border-radius: 4px;
+  border-left: 2px solid var(--purple);
+}
+
+.passage-label {
+  font-size: 0.65rem;
+  font-weight: 600;
   color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.3rem;
+}
+
+.passage-text {
+  font-size: 0.81rem;
+  color: var(--gray-600);
   line-height: 1.5;
-  border-left: 2px solid var(--gray-200);
-  padding-left: 0.75rem;
+  font-style: italic;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  margin: 0;
+}
+
+/* Explanation of source importance */
+.evidence-explanation {
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--gray-150);
+}
+
+.explanation-text {
+  font-size: 0.75rem;
+  color: var(--gray-500);
+  line-height: 1.4;
+  margin: 0;
 }
 
 .assessment-note {
