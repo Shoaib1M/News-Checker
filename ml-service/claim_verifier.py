@@ -105,6 +105,13 @@ class NLIScorer:
     def _load(self):
         if self._pipeline is not None or self.error is not None:
             return
+        # The default Render instance has limited RAM. Keep the optional
+        # transformer model disabled there unless explicitly enabled.
+        if self._pipeline_factory is None and os.getenv("NLI_ENABLED", "false").lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            self.error = "NLI disabled; set NLI_ENABLED=true to enable it"
+            return
         try:
             factory = self._pipeline_factory
             if factory is None:

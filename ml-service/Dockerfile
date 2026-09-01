@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
     OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
     TOKENIZERS_PARALLELISM=false \
+    NLI_ENABLED=false \
     NLI_MODEL=cross-encoder/nli-deberta-v3-small
 
 COPY requirements.txt .
