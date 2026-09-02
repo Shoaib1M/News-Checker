@@ -49,6 +49,12 @@ def extract_entities(text: str) -> List[str]:
         r'\bunited\s+kingdom\b',
         r'\bunited\s+nations\b',
         r'\bindia\b',  # Single word but important
+        r'\bwater\b',
+        r'\btriangle\b',
+        r'\bmoon\b',
+        r'\bchina\b',
+        r'\bnasa\b',
+        r'\basteroid\b',
         r'\b(us|usa)\b',  # Abbreviations
     ]
     
@@ -60,7 +66,11 @@ def extract_entities(text: str) -> List[str]:
                 normalized = match[0].capitalize()
             else:
                 normalized = ' '.join(word.capitalize() for word in match.split())
-            if normalized not in entities and normalized.lower() not in {e.lower() for e in entities}:
+            if (
+                len(normalized) > 2
+                and normalized.lower() not in {"c", "the", "a", "an"}
+                and normalized.lower() not in {e.lower() for e in entities}
+            ):
                 entities.append(normalized)
     
     return list(dict.fromkeys(entities))  # Preserve order, remove duplicates
@@ -82,7 +92,11 @@ def extract_temporal_info(text: str) -> tuple[List[str], Optional[str]]:
     
     for pattern in patterns:
         matches = re.findall(pattern, text, re.IGNORECASE)
-        temporal_refs.extend(matches)
+        for match in matches:
+            if isinstance(match, tuple):
+                temporal_refs.append(" ".join(part for part in match if part))
+            else:
+                temporal_refs.append(match)
     
     # Determine temporal constraint
     future_indicators = re.search(r'\b(by|in|will|planned|planned|proposed|estimated)\b', text, re.IGNORECASE)
@@ -119,6 +133,9 @@ def extract_numerical_info(text: str) -> List[str]:
 def classify_claim_type(text: str) -> str:
     """Classify the type of claim based on linguistic patterns."""
     
+    if re.search(r'\b(opinion|think|believe|best|worst|beautiful|amazing)\b', text, re.IGNORECASE):
+        return "subjective"
+
     # Numerical claim
     if re.search(r'\b\d+(?:%|million|billion|thousand)\b', text):
         return "numerical"
@@ -139,6 +156,10 @@ def classify_claim_type(text: str) -> str:
     if re.search(r'\b(more|less|greater|smaller|than|vs|compared to)\b', text, re.IGNORECASE):
         return "comparative"
     
+    # News/current-event claim
+    if re.search(r'\b(today|yesterday|announced|confirms?|resigned?|reported|breaking|this week)\b', text, re.IGNORECASE):
+        return "news"
+
     # Geopolitical claim
     if re.search(r'\b(country|countries|nation|nations|government|president|minister|border|nation|state|renamed|changed name)\b', text, re.IGNORECASE):
         return "geopolitical"
@@ -165,6 +186,17 @@ def extract_core_predicates(text: str) -> List[str]:
                 predicates.extend([m for m in match if m])
             else:
                 predicates.append(match)
+
+    # Capture ordinary present-tense assertions that do not match the
+    # auxiliary/modal patterns above (e.g. "improves productivity").
+    for verb in re.findall(
+        r'\b(?:improves?|reduces?|increases?|decreases?|confirms?|announces?|'
+        r'resigns?|collapses?|supports?|contradicts?|denies?|fails?|'
+        r'passes?|hits?|causes?)\b',
+        text,
+        re.IGNORECASE,
+    ):
+        predicates.append(verb)
     
     # Clean up common words that aren't meaningful predicates
     stop_predicates = {'is', 'was', 'are', 'were', 'be', 'have', 'has', 'do', 'does', 'did'}

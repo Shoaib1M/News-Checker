@@ -42,10 +42,11 @@ class RelevanceFilter:
         'changed', 'change', 'changing', 'name', 'said', 'said', 'say',  # Common generic words
     }
     
-    # MUCH STRICTER THRESHOLDS to eliminate irrelevant articles
+    # Calibrated thresholds: reject collisions, but retain genuinely topical
+    # reporting for claims whose wording differs from the article wording.
     MIN_ENTITY_MATCH = 0.20  # At least 20% of entities must match
-    MIN_OVERALL_RELEVANCE = 0.45  # Minimum relevance threshold (45% - much higher!)
-    STRICT_MIN_RELEVANCE = 0.55  # For showing in evidence (55% - strict!)
+    MIN_OVERALL_RELEVANCE = 0.30
+    STRICT_MIN_RELEVANCE = 0.42
     
     def __init__(self):
         """Initialize the relevance filter."""
@@ -136,7 +137,7 @@ class RelevanceFilter:
         entities = set()
         
         # Look in title first (more prominent)
-        title_text = f"{title} {text[:500]}"  # Check title + opening of text
+        title_text = f"{title} {text[:1200]}"  # Check title + opening of text
         
         pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b'
         for match in re.finditer(pattern, title_text):
@@ -144,6 +145,12 @@ class RelevanceFilter:
             # Skip common non-entity capitalized words
             if entity not in {'The', 'A', 'An', 'In', 'On', 'At', 'Is', 'Was', 'Are', 'Were'}:
                 entities.add(entity.lower())
+
+        lowered = title_text.lower()
+        for phrase in ("united states", "the united states", "us", "usa",
+                       "great wall", "china", "india", "nasa", "earth"):
+            if re.search(rf"\b{re.escape(phrase)}\b", lowered):
+                entities.add(phrase)
         
         return entities
     
@@ -162,7 +169,19 @@ class RelevanceFilter:
             return 0.5  # Neutral for non-entity claims
         
         claim_entities = {e.lower() for e in decomp.primary_entities}
-        matched = claim_entities.intersection(doc_entities)
+        matched = set()
+        for entity in claim_entities:
+            variants = {entity}
+            if entity == "united states":
+                variants.update({"us", "usa", "america", "united states"})
+            if entity == "the great wall":
+                variants.add("great wall")
+            if any(
+                variant in candidate or candidate in variant
+                for variant in variants
+                for candidate in doc_entities
+            ):
+                matched.add(entity)
         
         return len(matched) / len(claim_entities)
     
@@ -172,11 +191,17 @@ class RelevanceFilter:
         
         Returns 0.0-1.0
         """
-        if not decomp.core_predicates:
-            return 0.5  # Neutral if no clear predicates
-        
-        claim_keywords = {p.lower() for p in decomp.core_predicates}
+        claim_keywords = {
+            token
+            for predicate in decomp.core_predicates
+            for token in predicate.lower().split()
+            if token not in {'being', 'is', 'are', 'was', 'were', 'to'}
+        }
         claim_keywords.update(decomp.entities_in_claim)
+        claim_keywords.difference_update({
+            'will', 'next', 'last', 'today', 'tomorrow', 'yesterday',
+            'month', 'year', 'day', 'time', 'being',
+        })
         
         if not claim_keywords:
             return 0.5
@@ -198,16 +223,21 @@ class RelevanceFilter:
         
         A good document discusses the same entities in the same context.
         """
-        if not decomp.primary_entities:
-            return 0.5
-        
         # Check if entities appear with relevant keywords
-        claim_keywords = {p.lower() for p in decomp.core_predicates}
+        claim_keywords = {
+            token
+            for predicate in decomp.core_predicates
+            for token in predicate.lower().split()
+            if token not in {'being', 'is', 'are', 'was', 'were', 'to'}
+        }
         claim_keywords.update(decomp.entities_in_claim)
         
         # If both entities and relevant keywords appear, coherence is high
-        if len(doc_entities) > 0 and len(claim_keywords.intersection(doc_keywords)) > 0:
+        overlap = len(claim_keywords.intersection(doc_keywords))
+        if len(doc_entities) > 0 and overlap > 1:
             return 0.7
+        elif overlap > 1:
+            return 0.55
         elif len(doc_entities) > 0:
             return 0.4  # Has entities but missing keywords
         else:
@@ -267,7 +297,15 @@ class RelevanceFilter:
             True if document should be included, False otherwise
         """
         threshold = self.STRICT_MIN_RELEVANCE if strict else self.MIN_OVERALL_RELEVANCE
-        return relevance_score.overall_relevance >= threshold
+        if relevance_score.overall_relevance < threshold:
+            return False
+        if relevance_score.entity_match_score == 0 and relevance_score.keyword_specificity < 0.35:
+            return False
+        if relevance_score.entity_match_score < 0.5 and relevance_score.predicate_match_score < 0.5:
+            return False
+        if relevance_score.predicate_match_score < 0.25:
+            return False
+        return True
     
     def filter_documents(
         self,

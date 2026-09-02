@@ -46,7 +46,9 @@ def _matches_domain(host: str, domain: str) -> bool:
 def classify_source(url: str) -> SourceProfile:
     """Return a transparent source tier used for aggregation safeguards."""
     parsed = urlparse(url)
-    host = parsed.netloc.lower().split(":")[0].lstrip("www.")
+    host = parsed.netloc.lower().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
     path = parsed.path.lower()
 
     if any(_matches_domain(host, domain) for domain in PRIMARY_SOURCE_DOMAINS):
