@@ -144,6 +144,11 @@ class StanceSummary(BaseModel):
     status: str = "insufficient_evidence"
     nli_available: bool = False
     evidence_count: int = 0
+    candidate_count: int = 0
+    relevant_source_count: int = 0
+    evidence_used_count: int = 0
+    retrieval_status: str = "NO_RESULTS"
+    retrieval_diagnostics: list[dict] = Field(default_factory=list)
 
 class ClaimAssessment(BaseModel):
     claim: str
@@ -170,6 +175,7 @@ class CheckResponse(BaseModel):
     confidence: str = "low"
     reasoning: str = ""
     external_evidence_available: bool = False
+    external_evidence_checked: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -373,9 +379,15 @@ async def check_statement(request: CheckRequest):
             else "low"
         ),
         reasoning=knowledge_assessment["reasoning"] if knowledge_assessment else (
-            "The result is based on retrieved evidence; no deterministic knowledge rule applied."
+            "Relevant external evidence was found and classified."
+            if all_evidence else
+            "External evidence was searched, but no source met the relevance and evidence-quality requirements."
         ),
-        external_evidence_available=bool(all_evidence),
+        external_evidence_available=any(
+            result.nli_available and result.stance in {"supports", "contradicts", "mixed"}
+            for result in all_evidence
+        ),
+        external_evidence_checked=not bool(knowledge_assessment),
     )
 
 

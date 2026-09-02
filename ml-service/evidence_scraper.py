@@ -135,6 +135,7 @@ class EvidenceResult:
 # Loaded lazily only after relevant passages have been found.  The app abstains
 # when this model is unavailable rather than treating lexical overlap as proof.
 _nli_scorer = NLIScorer()
+_last_retrieval_diagnostics = []
 
 # ---------------------------------------------------------------------------
 # HTML PARSERS
@@ -297,7 +298,7 @@ INPUT: The user's statement.
 OUTPUT: A list of result dictionaries containing titles, snippets, and URLs.
 """
 def search_web(statement, max_results=15):
-    query = quote_plus(build_search_query(statement))
+    query = quote_plus(statement.strip())
     html = fetch_url(SEARCH_URL.format(query=query))
     parser = DuckDuckGoHTMLParser()
     parser.feed(html)
@@ -349,7 +350,7 @@ def search_newsapi(statement, max_results=10):
     if not api_key: return []
 
     params = {
-        "q": build_search_query(statement),
+        "q": statement.strip(),
         "language": "en",
         "sortBy": "relevancy",
         "pageSize": max_results,
@@ -377,7 +378,7 @@ def search_gnews(statement, max_results=10):
     if not api_key: return []
 
     params = {
-        "q": build_search_query(statement),
+        "q": statement.strip(),
         "lang": "en",
         "max": max_results,
         "apikey": api_key,
@@ -404,7 +405,7 @@ def search_guardian(statement, max_results=10):
     if not api_key: return []
 
     params = {
-        "q": build_search_query(statement),
+        "q": statement.strip(),
         "api-key": api_key,
         "page-size": max_results,
         "show-fields": "headline,trailText,bodyText",
@@ -448,6 +449,13 @@ def search_api_providers(statement, max_results_per_provider=10):
     for query in queries[:3]:  # Limit to top 3 queries to avoid too many requests
         for provider_name, provider_func in providers:
             try:
+                required_key = {
+                    "gnews": "GNEWS_API_KEY",
+                    "guardian": "GUARDIAN_API_KEY",
+                    "newsapi": "NEWSAPI_KEY",
+                }[provider_name]
+                if not os.getenv(required_key):
+                    continue
                 provider_documents = provider_func(query, max_results=max_results_per_provider // 2)
                 for doc in provider_documents:
                     url = doc.get('url', '')
@@ -459,23 +467,81 @@ def search_api_providers(statement, max_results_per_provider=10):
 
     return dedupe_documents(documents)
 
+
+def search_api_providers_with_diagnostics(statement, max_results_per_provider=10):
+    """Run configured providers while preserving request and result outcomes."""
+    queries = generate_search_queries(statement)
+    providers = [
+        ("gnews", search_gnews, "GNEWS_API_KEY"),
+        ("guardian", search_guardian, "GUARDIAN_API_KEY"),
+        ("newsapi", search_newsapi, "NEWSAPI_KEY"),
+    ]
+    documents = []
+    diagnostics = []
+    seen_urls = set()
+
+    for query in queries[:4]:
+        for provider_name, provider_func, key_name in providers:
+            diagnostic = {
+                "provider": provider_name,
+                "query": query,
+                "enabled": bool(os.getenv(key_name)),
+                "status": "disabled",
+                "raw_result_count": 0,
+                "normalized_result_count": 0,
+                "error": None,
+            }
+            if not diagnostic["enabled"]:
+                diagnostics.append(diagnostic)
+                continue
+            try:
+                provider_documents = provider_func(
+                    query, max_results=max(2, max_results_per_provider // 2)
+                )
+                diagnostic["status"] = "success" if provider_documents else "no_results"
+                diagnostic["raw_result_count"] = len(provider_documents)
+                for document in provider_documents:
+                    url = document.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        documents.append(document)
+                        diagnostic["normalized_result_count"] += 1
+            except Exception as error:
+                diagnostic["status"] = "failed"
+                diagnostic["error"] = str(error)
+            diagnostics.append(diagnostic)
+    return dedupe_documents(documents), diagnostics
+
 def dedupe_documents(documents):
-    """Removes articles that have the exact same URL or the exact same Title."""
+    """Remove exact duplicates and obvious syndicated copies of one story."""
     seen_urls = set()
     seen_titles = set()
+    title_tokens = []
     unique_documents = []
 
     for document in documents:
         url = document.get("url", "")
         title = document.get("title", "").strip().lower()
         title_key = re.sub(r"[^a-z0-9\s]", "", title)
+        title_key = re.sub(
+            r"\b(reuters|associated press|ap news|the guardian|bbc news)\b",
+            "",
+            title_key,
+        )
         title_key = re.sub(r"\s+", " ", title_key).strip()
 
         if not url or url in seen_urls: continue
         if title_key and title_key in seen_titles: continue
+        tokens = set(title_key.split())
+        if len(tokens) >= 6 and any(
+            len(tokens.intersection(previous)) / len(tokens.union(previous)) >= 0.85
+            for previous in title_tokens
+        ):
+            continue
 
         seen_urls.add(url)
         if title_key: seen_titles.add(title_key)
+        if len(tokens) >= 6: title_tokens.append(tokens)
         unique_documents.append(document)
 
     return unique_documents
@@ -893,7 +959,7 @@ def evidence_score(results, top_k=5):
     strength = np.array([max(result.support_score, result.contradiction_score) for result in verified])
     return float(np.sum(strength * weights) / np.sum(weights))
 
-def stance_summary(results, top_k=5):
+def stance_summary(results, top_k=5, candidate_count=None):
     """Aggregate only strong NLI judgments from classified sources."""
     relevant_results = [
         result for result in results
@@ -913,6 +979,9 @@ def stance_summary(results, top_k=5):
             "verdict": "insufficient evidence", "status": "insufficient_evidence",
             "nli_available": any(result.nli_available for result in results),
             "evidence_count": len(relevant_results),
+            "candidate_count": candidate_count if candidate_count is not None else len(results),
+            "relevant_source_count": 0,
+            "evidence_used_count": 0,
         }
 
     top_results = relevant_results[:top_k]
@@ -947,6 +1016,9 @@ def stance_summary(results, top_k=5):
         "status": status,
         "nli_available": True,
         "evidence_count": len(top_results),
+        "candidate_count": candidate_count if candidate_count is not None else len(results),
+        "relevant_source_count": len(relevant_results),
+        "evidence_used_count": len(top_results),
     }
 
 # ---------------------------------------------------------------------------
@@ -1033,18 +1105,40 @@ FLOW:
 5. Ranks & Scores remaining evidence.
 """
 def collect_evidence(statement, max_results=15, fetch_articles=True, use_fallback=True):
+    global _last_retrieval_diagnostics
     load_env_file()
     
     # Step 1: Try APIs with multiple queries
-    documents = search_api_providers(statement, max_results_per_provider=max_results)
+    documents, diagnostics = search_api_providers_with_diagnostics(
+        statement, max_results_per_provider=max_results
+    )
 
     # Step 2: Use DuckDuckGo fallback if requested
     if use_fallback:
         try:
             fallback_documents = collect_duckduckgo_evidence(statement, max_results=max_results, fetch_articles=fetch_articles)
             documents = dedupe_documents(documents + fallback_documents)
+            diagnostics.append({
+                "provider": "duckduckgo",
+                "query": "multiple generated queries",
+                "enabled": True,
+                "status": "success" if fallback_documents else "no_results",
+                "raw_result_count": len(fallback_documents),
+                "normalized_result_count": len(fallback_documents),
+                "error": None,
+            })
         except Exception as error:
             print(f"DuckDuckGo fallback failed: {error}")
+            diagnostics.append({
+                "provider": "duckduckgo",
+                "query": "multiple generated queries",
+                "enabled": True,
+                "status": "failed",
+                "raw_result_count": 0,
+                "normalized_result_count": 0,
+                "error": str(error),
+            })
+    _last_retrieval_diagnostics = diagnostics
 
     # Step 3: Fetch Full HTML Text
     if documents:
@@ -1064,19 +1158,41 @@ def collect_evidence(statement, max_results=15, fetch_articles=True, use_fallbac
     if not relevant_documents:
         # No relevant documents found - return empty evidence
         print(f"No relevant documents found after filtering. Original search returned {len(documents)} candidates.")
+        statuses = {item["status"] for item in diagnostics}
+        if "success" in statuses and documents:
+            retrieval_status = "SEARCH_SUCCESS"
+        elif "failed" in statuses and not {"success", "no_results"} & statuses:
+            retrieval_status = "SEARCH_FAILED"
+        elif "failed" in statuses:
+            retrieval_status = "SEARCH_PARTIAL"
+        else:
+            retrieval_status = "NO_RESULTS"
         return 0.0, {
             "support": 0.0, "contradiction": 0.0, "net": 0.0,
             "verdict": "no relevant external evidence found", 
             "status": "insufficient_evidence",
             "nli_available": False, 
             "evidence_count": 0,
+            "candidate_count": len(documents),
+            "relevant_source_count": 0,
+            "evidence_used_count": 0,
+            "retrieval_status": retrieval_status,
+            "retrieval_diagnostics": diagnostics,
         }, []
     
     # Step 5: Run the Scorer on relevant documents only
     ranked_results = rank_by_similarity(statement, relevant_documents)
     
     # Return 3 things: The overall score, the stance summary, and the list of articles
-    return evidence_score(ranked_results), stance_summary(ranked_results), ranked_results
+    summary = stance_summary(ranked_results, candidate_count=len(documents))
+    statuses = {item["status"] for item in diagnostics}
+    summary["retrieval_status"] = (
+        "SEARCH_PARTIAL" if "failed" in statuses
+        else "SEARCH_SUCCESS" if documents
+        else "NO_RESULTS"
+    )
+    summary["retrieval_diagnostics"] = diagnostics
+    return evidence_score(ranked_results), summary, ranked_results
 
 # Local CLI testing
 def main():

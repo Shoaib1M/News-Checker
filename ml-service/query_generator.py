@@ -35,38 +35,50 @@ class QueryGenerator:
         if decomp is None:
             decomp = decompose_claim(claim)
         
-        queries = []
+        queries = [{
+            'query': f'"{claim.strip().rstrip(".!?")}"',
+            'purpose': 'exact_claim',
+            'priority': 'highest',
+        }]
         
-        # 1. ENTITY-FOCUSED QUERIES
+        # 1. Preserve the proposition itself. This is especially important for
+        # headlines and claims whose wording differs from article wording.
+        queries.append({
+            'query': claim.strip().rstrip(".!?"),
+            'purpose': 'proposition',
+            'priority': 'highest',
+        })
+
+        # 2. ENTITY-FOCUSED QUERIES
         # These find articles about the specific entities involved
         if decomp.primary_entities:
             entity_queries = self._generate_entity_queries(decomp)
             queries.extend(entity_queries)
         
-        # 2. PREDICATE-FOCUSED QUERIES
+        # 3. PREDICATE-FOCUSED QUERIES
         # These find articles about the specific actions/changes being claimed
         if decomp.core_predicates:
             predicate_queries = self._generate_predicate_queries(decomp)
             queries.extend(predicate_queries)
         
-        # 3. NUMERICAL/COMPARATIVE QUERIES
+        # 4. NUMERICAL/COMPARATIVE QUERIES
         # For claims with numbers, dates, or comparisons
         if decomp.numerical_values or decomp.claim_type == "comparative":
             numerical_queries = self._generate_numerical_queries(decomp)
             queries.extend(numerical_queries)
         
-        # 4. CONTRADICTORY/VERIFICATION QUERIES
+        # 5. CONTRADICTORY/VERIFICATION QUERIES
         # Explicitly search for evidence contradicting or verifying the claim
         contradictory_queries = self._generate_verification_queries(decomp)
         queries.extend(contradictory_queries)
         
-        # 5. CONTEXTUAL QUERIES
+        # 6. CONTEXTUAL QUERIES
         # For claims about policies, organizations, or institutions
         if decomp.claim_type in {"policy", "geopolitical"}:
             contextual_queries = self._generate_contextual_queries(decomp)
             queries.extend(contextual_queries)
         
-        # 6. FACT-CHECK SPECIFIC QUERIES
+        # 7. FACT-CHECK SPECIFIC QUERIES
         # Explicitly search for fact-checking sources
         factcheck_query = self._generate_factcheck_query(decomp)
         if factcheck_query:
@@ -81,16 +93,19 @@ class QueryGenerator:
                 seen.add(query_text)
                 unique_queries.append(q)
         
-        return unique_queries[:7]  # Return top 7 most relevant queries
+        return unique_queries[:12]
     
     def _generate_entity_queries(self, decomp: ClaimDecomposition) -> List[dict]:
         """Generate queries focused on the primary entities."""
         queries = []
-        entities = decomp.primary_entities[:3]
+        entities = [
+            entity for entity in decomp.primary_entities[:3]
+            if len(entity.strip()) > 2 and entity.lower() not in {'the', 'water', 'earth', 'c'}
+        ]
         
-        if len(entities) >= 2:
+        if len(entities) >= 2 and all(len(entity) > 2 for entity in entities[:2]):
             # Query with both entities
-            query_text = ' '.join(entities)
+            query_text = '"' + '" "'.join(entities) + '"'
             queries.append({
                 'query': query_text,
                 'purpose': 'entity_relationship',
@@ -101,7 +116,7 @@ class QueryGenerator:
         for entity in entities[:2]:
             if decomp.core_predicates:
                 for predicate in decomp.core_predicates[:2]:
-                    query_text = f'{entity} {predicate}'
+                    query_text = f'"{entity}" "{predicate}"'
                     queries.append({
                         'query': query_text,
                         'purpose': 'entity_predicate',
@@ -123,16 +138,12 @@ class QueryGenerator:
     def _generate_predicate_queries(self, decomp: ClaimDecomposition) -> List[dict]:
         """Generate queries focused on the predicates/actions."""
         queries = []
-        predicates = decomp.core_predicates[:2]
+        predicates = [
+            predicate for predicate in decomp.core_predicates[:2]
+            if predicate.lower() not in {'being', 'is', 'are', 'was', 'were'}
+        ]
         
         for predicate in predicates:
-            # Predicate alone
-            queries.append({
-                'query': predicate,
-                'purpose': 'predicate_focused',
-                'priority': 'medium',
-            })
-            
             # Predicate + entity
             if decomp.primary_entities:
                 entity = decomp.primary_entities[0]
@@ -175,12 +186,21 @@ class QueryGenerator:
         """Generate queries that look for contradictory or verification evidence."""
         queries = []
         
-        # For "X is changed to Y" type claims, search for specific relationship
+        # Search the proposition as a relationship, preserving subject/object.
+        if len(decomp.primary_entities) >= 2:
+            entity, object_entity = decomp.primary_entities[:2]
+            for relation in ('renamed', 'name change', 'rename'):
+                queries.append({
+                    'query': f'"{entity}" "{object_entity}" {relation}',
+                    'purpose': 'proposition_verification',
+                    'priority': 'highest',
+                })
+
         if decomp.contradicting_entities:
             for entity in decomp.primary_entities[:1]:
                 for contra_entity in decomp.contradicting_entities:
                     # Direct "X to Y" or "X become Y" query
-                    query_text = f'{entity} to {contra_entity}'
+                    query_text = f'"{entity}" "{contra_entity}"'
                     queries.append({
                         'query': query_text,
                         'purpose': 'direct_relationship',
@@ -195,10 +215,10 @@ class QueryGenerator:
                     })
         
         # Search for denials/contradictions
-        if decomp.core_predicates:
+        if decomp.core_predicates and decomp.primary_entities:
             for entity in decomp.primary_entities[:1]:
                 for predicate in decomp.core_predicates[:1]:
-                    query_text = f'{entity} {predicate} NOT false deny'
+                    query_text = f'"{entity}" "{predicate}" (false OR denied OR debunked OR fact check)'
                     queries.append({
                         'query': query_text,
                         'purpose': 'contradiction_search',

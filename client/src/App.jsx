@@ -401,8 +401,24 @@ function App() {
               )}
               <p className="assessment-note">
                 {result.claim_type} · {result.confidence} confidence
-                {result.external_evidence_available ? " · external evidence checked" : " · no external evidence required"}
+                {result.external_evidence_available
+                  ? " · evidence used"
+                  : result.external_evidence_checked
+                    ? " · no qualifying external evidence"
+                    : " · deterministic check"}
               </p>
+              {result.external_evidence_checked && (
+                <>
+                  <p className="assessment-note">
+                    Web verification: {result.evidence_stance?.retrieval_status || "NO_RESULTS"}
+                  </p>
+                  {result.evidence_stance?.retrieval_status === "SEARCH_FAILED" && (
+                    <p className="assessment-note">
+                      Web verification could not be completed because all configured search providers failed or are unavailable.
+                    </p>
+                  )}
+                </>
+              )}
               <ScoreBreakdown
                 mlScore={result.ml_score}
                 evidenceScore={result.evidence_score}
@@ -415,7 +431,10 @@ function App() {
           {result.top_evidence && result.top_evidence.length > 0 && (
             <div className="evidence-section" id="evidence-section">
               <p className="section-label">
-                Sources found — {result.top_evidence.length} articles
+                Evidence used — {result.evidence_stance?.evidence_used_count || result.top_evidence.length} sources
+                {result.evidence_stance?.candidate_count
+                  ? ` · ${result.evidence_stance.candidate_count} candidates searched`
+                  : ""}
               </p>
               <div className="evidence-grid">
                 {result.top_evidence.map((ev, i) => (
@@ -423,6 +442,13 @@ function App() {
                 ))}
               </div>
             </div>
+          )}
+          {result.external_evidence_checked &&
+            (!result.top_evidence || result.top_evidence.length === 0) &&
+            !result.external_evidence_available && (
+            <p className="assessment-note evidence-empty">
+              External sources were checked, but none were relevant and reliable enough to show as evidence.
+            </p>
           )}
         </section>
       )}
