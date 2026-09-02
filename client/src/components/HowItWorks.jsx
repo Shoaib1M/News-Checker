@@ -28,110 +28,61 @@ import {
   Code2,
 } from "lucide-react";
 
-// The raw data for our interactive "Pipeline" accordion
+// Final architecture for the end-to-end fact-checking pipeline.
 const PIPELINE_STEPS = [
   {
-    id: "dataset",
-    icon: <Package className="hiw-step-icon" />,
-    title: "Claim understanding",
-    short: "Identify type, scope, and verifiability",
-    detail: `The LIAR dataset (Wang, 2017) contains 12,836 short political statements from PolitiFact, 
-each labelled by professional fact-checkers as one of six truthfulness levels: pants-fire, false, 
-barely-true, half-true, mostly-true, and true.
+id: "claim-understanding",
+icon: <Package className="hiw-step-icon" />,
+title: "Claim understanding",
+short: "Identify what the claim is actually saying",
+detail: `We parse the claim into its subject, action, object, timeline, qualifiers, and any negation or attribution.
 
-Each sample includes rich metadata: the speaker's name, job title, state, party affiliation, 
-and their historical truth counts across all five non-true categories. We collapse the six labels 
-into a binary classification: pants-fire / false / barely-true → "Fake-ish" and half-true / 
-mostly-true / true → "True-ish".
-
-Split: 10,240 training · 1,284 validation · 1,267 test samples.`,
+This matters because a claim like "government X banned platform Y" is not the same as a vague mention of X and Y in the same article. The system keeps the relationship between the actor, the action, and the target object so retrieval stays focused on the actual proposition.`,
   },
   {
-    id: "features",
-    icon: <FileText className="hiw-step-icon" />,
-    title: "Deterministic checks",
-    short: "Use calculations and rules for clear facts",
-    detail: `We built a custom TF-IDF (Term Frequency–Inverse Document Frequency) vectorizer from scratch — 
-no scikit-learn. It generates unigram + bigram features with a minimum document frequency of 2.
+id: "query-generation",
+icon: <FileText className="hiw-step-icon" />,
+title: "Targeted search",
+short: "Search for the actual story, not generic keywords",
+detail: `We generate multiple query variants for each claim: the exact headline, a normalized wording, subject + action + object wording, entity + event queries, contradiction searches, and date/location variants where relevant.
 
-For the Binary Truth MLP, we concatenate multiple text fields: statement + subject + speaker + 
-job + state + party + context into a single text feature, then apply TF-IDF. Each document 
-vector is L2-normalised so all vectors sit on the unit sphere.
-
-We also engineer 5 additional features from the speaker's historical truth counts 
-(barely-true, false, half-true, mostly-true, pants-fire), applying log(1+x) scaling and 
-min-max normalisation. The final feature vector is [TF-IDF features | history features].`,
+This is designed to find the original report, same-event coverage, primary sources, and contradiction checks without drifting into unrelated articles that merely share a few words.`,
   },
   {
-    id: "model",
-    icon: <Brain className="hiw-step-icon" />,
-    title: "Learned signal",
-    short: "A limited prior, never the sole verdict",
-    detail: `The Binary Truth MLP is a fully-connected neural network built from scratch in NumPy 
-(no PyTorch/TensorFlow):
+id: "retrieval",
+icon: <Globe className="hiw-step-icon" />,
+title: "High-recall retrieval",
+short: "Collect likely candidates from multiple providers",
+detail: `The system queries live search providers and normalizes each result before filtering.
 
-Input Layer → Dense(64, ReLU) → Dense(1, Sigmoid)
-
-Training details:
-• Mini-batch SGD with batch size 128
-• Learning rate: 0.05
-• 40 training epochs
-• Binary cross-entropy loss
-• Xavier/He weight initialisation
-• Threshold tuned on the validation set (not fixed at 0.5)
-
-Backpropagation is implemented manually: we compute gradients for every weight and bias, 
-then update using vanilla gradient descent. This is a deliberate choice — we understand and 
-can explain every line of the training loop.`,
+We track provider status, raw results, normalized results, and candidate-level diagnostics so a failed provider or empty provider is never silently treated as a substantive truth signal.`,
   },
   {
-    id: "classification",
-    icon: <CheckCircle2 className="hiw-step-icon" />,
-    title: "Verdict and confidence",
-    short: "True, false, nuanced, uncertain, or subjective",
-    detail: `The sigmoid output gives a probability between 0 and 1. Rather than using the standard 
-0.5 threshold, we sweep thresholds from 0.30 to 0.70 on the validation set and pick the one 
-that maximises accuracy.
+id: "relevance",
+icon: <Target className="hiw-step-icon" />,
+title: "Relevance filtering",
+short: "Reject weak or unrelated matches",
+detail: `Candidates are scored by entity match, action compatibility, temporal fit, and proposition relevance. We deliberately keep a broad first pass and then apply a stricter relevance filter to avoid both extremes: too many low-quality hits and too few relevant sources.
 
-This tuned threshold typically lands around 0.45–0.55, and the small adjustment can yield 
-1–2% accuracy improvement. The model outputs:
-• A probability score (0 = very likely fake, 1 = very likely true)
-• A class label based on the tuned threshold
-• A human-readable explanation ("probably correct", "uncertain or mixed", etc.)`,
+The goal is to keep the evidence related to the same event or proposition while excluding generic topical articles that merely mention the same names or numbers.`,
   },
   {
-    id: "evidence",
-    icon: <Globe className="hiw-step-icon" />,
-    title: "External evidence",
-    short: "Targeted retrieval for current or unclear claims",
-    detail: `The ML model alone isn't enough — so we scrape the web in real time for corroborating or 
-contradicting evidence:
+id: "nli",
+icon: <Brain className="hiw-step-icon" />,
+title: "Evidence reading and NLI",
+short: "Check the claim against the actual passage",
+detail: `When article text is available, the system extracts the useful passage and compares the claim directly against that passage.
 
-1. Search: We query DuckDuckGo, GNews, The Guardian API, and NewsAPI to find relevant articles
-2. Fetch: Full article text is extracted from up to 12 sources using our custom HTML parser
-3. Similarity: Each article is TF-IDF vectorised and compared to the claim via cosine similarity
-4. Stance Detection: For each article sentence, we compute:
-   • Keyword overlap (relevance)
-   • Directional agreement/opposition (e.g., "increase" vs "decrease")
-   • Negation detection (flips stance)
-   • Numeric alignment (do the numbers match?)
-   
-Each article gets a support score and contradiction score. The overall evidence stance is 
-the net balance across all sources.`,
+The key question is not "Does the article title mention the same words?" but "Does the evidence passage support, contradict, or remain neutral about the claim?" This is where NLI/stance classification matters.`,
   },
   {
-    id: "scoring",
-    icon: <Target className="hiw-step-icon" />,
-    title: "Evidence-aware result",
-    short: "Explain verdict, confidence, evidence, and limits",
-    detail: `The result keeps separate:
+id: "evidence-fusion",
+icon: <CheckCircle2 className="hiw-step-icon" />,
+title: "Source quality + evidence fusion",
+short: "Weight direct, independent, recent reporting more heavily",
+detail: `The final verdict balances directness, relevance, source quality, source independence, recency, contradiction strength, and NLI confidence. Independent high-quality evidence is valued more than duplicate wire copies or weak contextual articles.
 
-• the verdict: what the system believes
-• confidence: how strong the available signals are
-• evidence: which sources support or contradict it
-• limitations: what could make the result uncertain
-
-No search result is treated as proof that a claim is false.`,
+Strong contradictory evidence can outweigh a weak supporting article, and the system abstains when the evidence is simply not strong enough.`,
   },
 ];
 
@@ -144,11 +95,11 @@ export default function HowItWorks() {
   return (
     <div className="hiw-page">
       <section className="intro" style={{ animationDelay: "0s" }}>
-        <p className="intro-tag">System Architecture · End-to-End Pipeline</p>
+        <p className="intro-tag">Evidence-first verification pipeline</p>
         <h2 className="intro-heading">How It Works</h2>
         <p className="intro-desc">
-          From raw dataset to credibility score — every step explained. Click
-          any stage to see the full technical details.
+          We start by understanding the claim, search for the real story, filter to the most relevant evidence,
+          and compare that evidence against the proposition before giving a verdict.
         </p>
       </section>
 
@@ -212,43 +163,41 @@ export default function HowItWorks() {
         </div>
       )}
 
-      {/* Architecture Diagram */}
+      {/* Pipeline summary */}
       <div className="hiw-arch-card" id="architecture-diagram">
         <h3 className="eval-section-title">
-          <Layers className="eval-icon" size={20} /> Neural Network Architecture
+          <Layers className="eval-icon" size={20} /> Final pipeline summary
         </h3>
         <div className="hiw-arch-visual">
-          <NeuralNetDiagram />
+          <EvidencePipelineDiagram />
         </div>
         <p className="hiw-arch-caption">
-          Binary Truth MLP: input features → 64-neuron hidden layer with ReLU
-          activation → single sigmoid output. All weights trained via
-          backpropagation with mini-batch SGD.
+          Claim understanding → targeted retrieval → relevance filtering → article passage analysis → NLI/stance → source quality check → evidence fusion → verdict.
         </p>
       </div>
 
-      {/* Scoring Formula */}
+      {/* Verdict logic */}
       <div className="hiw-formula-card" id="scoring-formula">
         <h3 className="eval-section-title">
-          <Calculator className="eval-icon" size={20} /> Scoring Formula
+          <Calculator className="eval-icon" size={20} /> Verdict logic
         </h3>
         <div className="hiw-formula">
           <div className="hiw-formula-eq">
-            <span className="hiw-f-label">Final Score</span>
+            <span className="hiw-f-label">Verdict</span>
             <span className="hiw-f-eq">=</span>
-            <span className="hiw-f-term hiw-f-ml">
-              <span className="hiw-f-weight">0.40</span>
-              <span className="hiw-f-name">ML Score</span>
-            </span>
-            <span className="hiw-f-op">+</span>
             <span className="hiw-f-term hiw-f-ev">
-              <span className="hiw-f-weight">0.35</span>
-              <span className="hiw-f-name">Evidence</span>
+              <span className="hiw-f-weight">Evidence</span>
+              <span className="hiw-f-name">Relevance</span>
             </span>
             <span className="hiw-f-op">+</span>
             <span className="hiw-f-term hiw-f-st">
-              <span className="hiw-f-weight">0.25</span>
-              <span className="hiw-f-name">Stance</span>
+              <span className="hiw-f-weight">Stance</span>
+              <span className="hiw-f-name">Support</span>
+            </span>
+            <span className="hiw-f-op">+</span>
+            <span className="hiw-f-term hiw-f-ml">
+              <span className="hiw-f-weight">Source</span>
+              <span className="hiw-f-name">Quality</span>
             </span>
           </div>
         </div>
@@ -259,7 +208,7 @@ export default function HowItWorks() {
               style={{ background: "var(--purple)" }}
             />
             <span>
-              <strong>ML Score</strong> — Model's sigmoid probability (0–1)
+              <strong>Evidence</strong> — direct relevance to the same event or proposition
             </span>
           </div>
           <div className="hiw-legend-item">
@@ -268,8 +217,7 @@ export default function HowItWorks() {
               style={{ background: "var(--blue)" }}
             />
             <span>
-              <strong>Evidence</strong> — Average cosine similarity of top
-              articles (0–1)
+              <strong>Stance</strong> — support, contradiction, or neutrality from the passage itself
             </span>
           </div>
           <div className="hiw-legend-item">
@@ -278,8 +226,7 @@ export default function HowItWorks() {
               style={{ background: "var(--green)" }}
             />
             <span>
-              <strong>Stance</strong> — Net support vs contradiction, normalised
-              (0–1)
+              <strong>Source quality</strong> — independence, recency, and reliability of the source
             </span>
           </div>
         </div>
@@ -324,128 +271,56 @@ export default function HowItWorks() {
   );
 }
 
-// ─── Neural Net Diagram ─────────────────────────────────────────────
+// ─── Evidence pipeline diagram ───────────────────────────────────────
 
-/*
-PURPOSE: Manually draws the nodes and connecting lines of our neural network.
-WHY THIS EXISTS: Showing the specific architecture helps viewers understand the complexity.
-*/
-function NeuralNetDiagram() {
-  const inputCount = 5;
-  const hiddenCount = 6;
-  const outputCount = 1;
+function EvidencePipelineDiagram() {
+  const steps = [
+    "Claim",
+    "Search",
+    "Relevance",
+    "Passage",
+    "NLI",
+    "Verdict",
+  ];
   const width = 500;
-  const height = 280;
-
-  // The horizontal (X) positions of our three layers
-  const layerX = [80, 250, 420];
-
-  // Helper function to generate an array of Y coordinates for a given layer
-  const makeNodes = (count, x, startY, gap) =>
-    Array.from({ length: count }, (_, i) => ({
-      x,
-      y: startY + i * gap,
-    }));
-
-  const inputNodes = makeNodes(inputCount, layerX[0], 30, 55);
-  const hiddenNodes = makeNodes(hiddenCount, layerX[1], 15, 48);
-  const outputNodes = makeNodes(outputCount, layerX[2], height / 2 - 10, 0);
-
-  const inputLabels = ["TF-IDF₁", "TF-IDF₂", "...", "History", "Meta"];
-  const hiddenLabels = ["h₁", "h₂", "h₃", "h₄", "h₅", "..."];
+  const height = 180;
+  const x = [50, 120, 210, 300, 390, 470];
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="hiw-nn-svg">
-      {/* Connections: Input Layer → Hidden Layer */}
-      {inputNodes.map((inp, i) =>
-        hiddenNodes.map((hid, j) => (
-          <line
-            key={`ih-${i}-${j}`}
-            x1={inp.x + 20}
-            y1={inp.y}
-            x2={hid.x - 20}
-            y2={hid.y}
-            className="hiw-nn-conn"
-            // Random opacity makes the web of connections look more organic
-            style={{ opacity: 0.25 + Math.random() * 0.3 }}
-          />
-        )),
-      )}
-
-      {/* Connections: Hidden Layer → Output Node */}
-      {hiddenNodes.map((hid, i) =>
-        outputNodes.map((out, j) => (
-          <line
-            key={`ho-${i}-${j}`}
-            x1={hid.x + 20}
-            y1={hid.y}
-            x2={out.x - 20}
-            y2={out.y}
-            className="hiw-nn-conn hiw-nn-conn-out"
-            style={{ opacity: 0.4 + Math.random() * 0.3 }}
-          />
-        )),
-      )}
-
-      {/* Draw Input nodes (Circles + Text) */}
-      {inputNodes.map((node, i) => (
-        <g key={`in-${i}`}>
-          <circle
-            cx={node.x}
-            cy={node.y}
-            r={16}
-            className="hiw-nn-node hiw-nn-input"
-          />
-          <text x={node.x} y={node.y + 4} className="hiw-nn-label">
-            {inputLabels[i]}
-          </text>
-        </g>
-      ))}
-
-      {/* Draw Hidden nodes */}
-      {hiddenNodes.map((node, i) => (
-        <g key={`hid-${i}`}>
-          <circle
-            cx={node.x}
-            cy={node.y}
-            r={16}
-            className="hiw-nn-node hiw-nn-hidden"
-          />
-          <text x={node.x} y={node.y + 4} className="hiw-nn-label">
-            {hiddenLabels[i]}
-          </text>
-        </g>
-      ))}
-
-      {/* Draw Output node */}
-      {outputNodes.map((node, i) => (
-        <g key={`out-${i}`}>
-          <circle
-            cx={node.x}
-            cy={node.y}
-            r={20}
-            className="hiw-nn-node hiw-nn-output"
+      {steps.map((label, i) => (
+        <g key={label}>
+          <rect
+            x={x[i]}
+            y={60}
+            width={42}
+            height={42}
+            rx={10}
+            className={
+              i % 2 === 0 ? "hiw-nn-node hiw-nn-input" : "hiw-nn-node hiw-nn-hidden"
+            }
           />
           <text
-            x={node.x}
-            y={node.y + 4}
-            className="hiw-nn-label hiw-nn-output-label"
+            x={x[i] + 21}
+            y={82}
+            textAnchor="middle"
+            className="hiw-nn-label"
+            style={{ fontSize: 9 }}
           >
-            σ
+            {label}
           </text>
         </g>
       ))}
-
-      {/* Layer labels at the bottom */}
-      <text x={layerX[0]} y={height - 5} className="hiw-nn-layer-label">
-        Input Layer
-      </text>
-      <text x={layerX[1]} y={height - 5} className="hiw-nn-layer-label">
-        Hidden (64, ReLU)
-      </text>
-      <text x={layerX[2]} y={height - 5} className="hiw-nn-layer-label">
-        Output (σ)
-      </text>
+      {x.slice(0, -1).map((val, i) => (
+        <line
+          key={`arrow-${i}`}
+          x1={val + 42}
+          y1={81}
+          x2={x[i + 1]}
+          y2={81}
+          className="hiw-nn-conn"
+        />
+      ))}
     </svg>
   );
 }

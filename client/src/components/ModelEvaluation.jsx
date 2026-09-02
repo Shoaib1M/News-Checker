@@ -52,13 +52,13 @@ export default function ModelEvaluation() {
     <div className="eval-page">
       {/* Page Header */}
       <section className="intro" style={{ animationDelay: "0s" }}>
-        <p className="intro-tag">Model Performance · LIAR Test Set ({dataset.test_size} samples)</p>
+        <p className="intro-tag">Auxiliary signal · not the final verdict</p>
         <h2 className="intro-heading">Model Evaluation</h2>
         <p className="intro-desc">
-          These are metadata-assisted LIAR research metrics, not general-news
-          production accuracy. The statement-only production-equivalent MLP is
-          61.8% accurate and is shown in checks only as an experimental prior.
-          Run <code>evaluate_models.py</code> and <code>evaluate_production_model.py</code> to reproduce both views.
+          These metrics document the legacy training prototype only. The production system
+          uses a claim-aware search, evidence filtering, and NLI/stance analysis pipeline.
+          The historical MLP remains visible as a weak prior, but it never determines the final
+          verdict when evidence is insufficient or conflicting.
         </p>
       </section>
 
