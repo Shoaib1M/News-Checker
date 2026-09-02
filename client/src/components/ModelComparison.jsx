@@ -89,23 +89,21 @@ export default function ModelComparison() {
   return (
     <div className="comp-page">
       <section className="intro" style={{ animationDelay: "0s" }}>
-        <p className="intro-tag">Side-by-Side · All models trained on LIAR</p>
+        <p className="intro-tag">Auxiliary research · final verdict is evidence-first</p>
         <h2 className="intro-heading">Model Comparison</h2>
         <p className="intro-desc">
-          Three models, one dataset. Here's how they stack up — and why
-          the Binary Truth MLP is the one powering the app.
+          These are historical prototype results from a training exercise. The final product
+          does not rely on any one model score to determine truth; it filters evidence,
+          checks source quality, and uses NLI to evaluate the proposition directly.
         </p>
       </section>
 
-      {/* Winner banner */}
+      {/* Historical note */}
       <div className="comp-winner-banner" id="winner-banner">
         <div className="comp-winner-icon"><Trophy size={28} color="var(--purple)" /></div>
         <div className="comp-winner-text">
-          <strong>Binary Truth MLP</strong> outperforms Logistic Regression by{" "}
-          <span className="comp-winner-delta">
-            {delta(bt.accuracy, lr.accuracy)}%
-          </span>{" "}
-          accuracy and achieves an AUC of <strong>{bt.auc}</strong>
+          <strong>Legacy model signal</strong> remains visible for research context, but
+          it is kept as a weak prior and never replaces the evidence-first verdict.
         </div>
       </div>
 
@@ -125,10 +123,10 @@ export default function ModelComparison() {
               </th>
               <th className="comp-th-model comp-th-winner">
                 <span className="comp-model-name" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}>
-                  Binary Truth MLP
+                  Historical Binary MLP
                   <span className="comp-star" style={{ display: 'flex' }}><Trophy size={14} /></span>
                 </span>
-                <span className="comp-model-sub">Production</span>
+                <span className="comp-model-sub">Auxiliary</span>
               </th>
             </tr>
           </thead>
@@ -180,46 +178,42 @@ export default function ModelComparison() {
         </table>
       </div>
 
-      {/* Why Binary MLP */}
+      {/* Historical model note */}
       <div className="comp-why-card" id="why-binary-mlp">
         <h3 className="eval-section-title">
-          <Lightbulb className="eval-icon" size={20} /> Why Binary Truth MLP?
+          <Lightbulb className="eval-icon" size={20} /> Why the legacy model remains auxiliary
         </h3>
         <div className="comp-why-grid">
           <div className="comp-why-item">
             <div className="comp-why-icon"><Brain size={24} color="var(--purple)" /></div>
-            <h4>Richer Features</h4>
+            <h4>Research context</h4>
             <p>
-              Unlike the other two models that only use statement text,
-              the Binary MLP combines TF-IDF with speaker metadata, party, job title,
-              state, and the speaker's historical truthfulness scores.
+              The model comparison is useful as a historical prototype, but it does not represent the
+              final production decision engine. The live checker is evidence-first.
             </p>
           </div>
           <div className="comp-why-item">
             <div className="comp-why-icon"><Settings2 size={24} color="var(--purple)" /></div>
-            <h4>Tuned Threshold</h4>
+            <h4>Low-weight prior</h4>
             <p>
-              Instead of a fixed 0.5 cutoff, the threshold is optimised on the
-              validation set to maximise accuracy — currently set at{" "}
-              <strong>{bt.threshold}</strong>.
+              The learned score can still be shown for transparency, but it is treated as a weak prior
+              and never overrides strong search, passage-level, or NLI evidence.
             </p>
           </div>
           <div className="comp-why-item">
             <div className="comp-why-icon"><Link size={24} color="var(--purple)" /></div>
-            <h4>Evidence Integration</h4>
+            <h4>Evidence integration</h4>
             <p>
-              The production system doesn't rely on the model alone.
-              Web evidence is scraped in real-time and combined with the ML score
-              (40% ML + 35% evidence + 25% stance) for a final credibility score.
+              The production verdict depends primarily on the same claim, retrieved evidence, source quality,
+              contradiction checks, and NLI-supported support or contradiction.
             </p>
           </div>
           <div className="comp-why-item">
             <div className="comp-why-icon"><Spline size={24} color="var(--purple)" /></div>
-            <h4>Binary is Practical</h4>
+            <h4>Abstention when uncertain</h4>
             <p>
-              End users want "true or false", not six fine-grained labels.
-              Collapsing to binary also gives us more training samples per class,
-              reducing overfitting on the small LIAR dataset.
+              When evidence is weak, absent, or conflicting, the system abstains instead of forcing an
+              overconfident truth label.
             </p>
           </div>
         </div>

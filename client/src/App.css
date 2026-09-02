@@ -168,6 +168,49 @@
   max-width: 540px;
 }
 
+.info-panel {
+  background: var(--white);
+  border: 1px solid var(--gray-200);
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.info-panel-title {
+  margin: 0 0 0.9rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--gray-800);
+  text-transform: uppercase;
+}
+
+.info-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem 1rem;
+  font-size: 0.87rem;
+  color: var(--gray-700);
+}
+
+.info-panel-grid strong { color: var(--purple); }
+
+.info-panel-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.info-panel-list span {
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  color: var(--gray-600);
+  font-size: 0.72rem;
+}
+
 /* ==========================================================================
    Input
    ========================================================================== */

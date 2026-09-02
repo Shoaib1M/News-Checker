@@ -353,6 +353,38 @@ function App() {
         </div>
       </form>
 
+      <section className="info-panel" aria-label="How it works">
+        <h3 className="info-panel-title">How it works</h3>
+        <div className="info-panel-grid">
+          <div>
+            <strong>1.</strong> Enter a claim or headline
+          </div>
+          <div>
+            <strong>2.</strong> We interpret the actual proposition
+          </div>
+          <div>
+            <strong>3.</strong> We search for relevant evidence
+          </div>
+          <div>
+            <strong>4.</strong> We compare the claim against the evidence
+          </div>
+          <div>
+            <strong>5.</strong> We check supporting and contradicting sources
+          </div>
+          <div>
+            <strong>6.</strong> We give a verdict with the evidence used
+          </div>
+        </div>
+        <div className="info-panel-list">
+          <span>Claim meaning</span>
+          <span>Relevant sources</span>
+          <span>Supporting evidence</span>
+          <span>Contradicting evidence</span>
+          <span>Source credibility</span>
+          <span>Independent reporting</span>
+        </div>
+      </section>
+
       <aside className="claim-examples" aria-label="Claim examples">
         <p className="claim-examples-title">Few examples</p>
         <p><span>"Water freezes at 0°C at sea level."</span> — true</p>

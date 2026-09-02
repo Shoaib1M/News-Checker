@@ -25,6 +25,8 @@ class ClaimDecomposition:
     confidence_markers: List[str]  # Words like "might", "likely", "definitely"
     modality: str  # "factual", "hypothetical", "subjective", "speculative"
     contradicting_entities: Set[str]  # Entities that might form contradictory claims
+    negation: bool = False
+    attribution: Optional[str] = None
     
     def search_focus_entities(self) -> List[str]:
         """Return entities most important for search queries."""
@@ -171,14 +173,14 @@ def classify_claim_type(text: str) -> str:
 def extract_core_predicates(text: str) -> List[str]:
     """Extract main verbs and action phrases."""
     predicates = []
-    
+
     # Common verb patterns
     verb_patterns = [
         r'\b(is|was|are|were)\s+(?:being\s+)?(\w+(?:\s+\w+)?)\b',  # "is being changed"
         r'\b(\w+ing)\b(?:\s+\w+)?\b',  # "changing", "renaming"
         r'\b(?:will|can|may|should)\s+(\w+)\b',  # "will change", "can increase"
     ]
-    
+
     for pattern in verb_patterns:
         matches = re.findall(pattern, text, re.IGNORECASE)
         for match in matches:
@@ -187,21 +189,25 @@ def extract_core_predicates(text: str) -> List[str]:
             else:
                 predicates.append(match)
 
-    # Capture ordinary present-tense assertions that do not match the
-    # auxiliary/modal patterns above (e.g. "improves productivity").
+    # Capture ordinary present/past-tense assertions.  A fact-check engine must
+    # preserve verbs like "banned", "renamed", "blocked", etc.; otherwise the
+    # subject/action/object relationship is lost during retrieval.
     for verb in re.findall(
         r'\b(?:improves?|reduces?|increases?|decreases?|confirms?|announces?|'
         r'resigns?|collapses?|supports?|contradicts?|denies?|fails?|'
-        r'passes?|hits?|causes?)\b',
+        r'passes?|hits?|causes?|bans?|banned|blocks?|blocked|approves?|approved|'
+        r'rejects?|rejected|suspends?|suspended|halts?|halted|renames?|renamed|'
+        r'changes?|changed|closes?|closed|opens?|opened|registers?|registered|'
+        r'launches?|launched|claims?|claimed|called|says?|said|orders?|ordered)\b',
         text,
         re.IGNORECASE,
     ):
         predicates.append(verb)
-    
+
     # Clean up common words that aren't meaningful predicates
     stop_predicates = {'is', 'was', 'are', 'were', 'be', 'have', 'has', 'do', 'does', 'did'}
     predicates = [p for p in predicates if p.lower() not in stop_predicates]
-    
+
     return list(dict.fromkeys(predicates))  # Remove duplicates
 
 
@@ -239,10 +245,10 @@ def detect_contradicting_entities(primary_entities: List[str], text: str) -> Set
 def decompose_claim(claim: str) -> ClaimDecomposition:
     """
     Decompose a claim into structured components for targeted retrieval.
-    
+
     Args:
         claim: The user's claim text
-        
+
     Returns:
         ClaimDecomposition with structured understanding
     """
@@ -252,12 +258,23 @@ def decompose_claim(claim: str) -> ClaimDecomposition:
     predicates = extract_core_predicates(claim)
     claim_type = classify_claim_type(claim)
     modality = extract_modality(claim)
-    
+    negation = bool(re.search(
+        r'\b(?:not|never|no|without|denied|deny|refuted|refute|didn\'t|did not|doesn\'t|does not|wasn\'t|was not|weren\'t|were not|cannot|can\'t)\b',
+        claim,
+        re.IGNORECASE,
+    ))
+    attribution_match = re.search(
+        r'\b(?:according to|officials|experts|reportedly|allegedly|said|says|claimed|denied|confirmed|warned)\b',
+        claim,
+        re.IGNORECASE,
+    )
+    attribution = attribution_match.group(0).lower() if attribution_match else None
+
     # Extract all significant nouns (not just capitalized entities)
     nouns = set(re.findall(r'\b([a-z]+(?:ies)?|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', claim.lower()))
     stopwords = {'is', 'are', 'was', 'were', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'by', 'to', 'for', 'of', 'with', 'from', 'as', 'be', 'this', 'that', 'it', 'they', 'he', 'she', 'we', 'you'}
     entities_in_claim = {n for n in nouns if len(n) > 2 and n not in stopwords}
-    
+
     # Detect sentiment direction for directional claims
     sentiment_direction = None
     if claim_type in {"numerical", "comparative"}:
@@ -265,12 +282,12 @@ def decompose_claim(claim: str) -> ClaimDecomposition:
             sentiment_direction = "positive"
         elif re.search(r'\b(decrease|fall|decline|lower|less|worse)\b', claim, re.IGNORECASE):
             sentiment_direction = "negative"
-    
+
     # Extract confidence markers
     confidence_markers = re.findall(r'\b(definitely|certainly|undoubtedly|likely|probably|might|could|possibly)\b', claim, re.IGNORECASE)
-    
+
     contradicting = detect_contradicting_entities(entities, claim)
-    
+
     return ClaimDecomposition(
         original_claim=claim,
         claim_type=claim_type,
@@ -284,6 +301,8 @@ def decompose_claim(claim: str) -> ClaimDecomposition:
         confidence_markers=confidence_markers,
         modality=modality,
         contradicting_entities=contradicting,
+        negation=negation,
+        attribution=attribution,
     )
 
 
