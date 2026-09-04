@@ -228,6 +228,9 @@ All changes are backwards compatible:
 - [x] All new modules compile without errors
 - [x] Original functionality preserved
 
+
+And we need to change the backend as well such that the model gives more accurate results when the user enters a claim!
+
 ---
 
 **Status**: Implementation Complete
