@@ -29,3 +29,26 @@ npm-debug.log*
 # ml-service/binary_truth_mlp.pkl
 # ml-service/saved_models/
 # ml-service/data/
+# Python
+ml-service/.venv/
+**/__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Model/cache files
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# OS
+.DS_Store
+Thumbs.dbml-service/.venv/
+ml-service/.venv/
