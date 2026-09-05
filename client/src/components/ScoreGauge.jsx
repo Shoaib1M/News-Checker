@@ -28,14 +28,35 @@ function getStrokeColor(score) {
   return "#059669"; // Dark Green
 }
 
+/*
+PURPOSE: Outcomes where a 0-100 "evidence balance" number would be a lie.
+WHY THIS EXISTS: The gauge previously drew a number for every status except
+`insufficient_evidence`, so a subjective claim or a claim about a future event
+got a confident-looking score computed from evidence that does not exist. Each
+of these states is a statement about the claim, not a measurement of evidence,
+so the dial shows a word instead of a number. Colors stay inside the app's
+existing palette — slate for "we can't say", amber for a real negative finding.
+*/
+const NON_NUMERIC_STATES = {
+  insufficient_evidence: { label: "unverified", color: "#64748b" },
+  not_a_claim: { label: "no claim", color: "#64748b" },
+  not_objectively_verifiable: { label: "subjective", color: "#64748b" },
+  not_verifiable_yet: { label: "not yet verifiable", color: "#7c3aed" },
+  unsupported_no_coverage: { label: "unsupported", color: "#f59e0b" },
+};
+
 export default function ScoreGauge({ score, assessmentStatus }) {
   const [displayScore, setDisplayScore] = useState(0);
   const [offset, setOffset] = useState(CIRCUMFERENCE); // Start fully empty
   const animationRef = useRef(null);
 
   useEffect(() => {
-    // 1. Animate the colored SVG ring filling up
-    const target = CIRCUMFERENCE - (score / 100) * CIRCUMFERENCE;
+    // 1. Animate the colored SVG ring filling up.
+    // For a non-numeric outcome the ring stays empty: combined_score is a
+    // placeholder 50 in those states, and drawing it as a half-full dial
+    // implied a measured "middling" result next to a "—" readout.
+    const ringScore = NON_NUMERIC_STATES[assessmentStatus] ? 0 : score;
+    const target = CIRCUMFERENCE - (ringScore / 100) * CIRCUMFERENCE;
     // Small delay ensures the animation doesn't finish before the browser actually renders the element
     const timer = setTimeout(() => setOffset(target), 100);
 
@@ -65,10 +86,10 @@ export default function ScoreGauge({ score, assessmentStatus }) {
       clearTimeout(timer);
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
-  }, [score]);
+  }, [score, assessmentStatus]);
 
-  const isInsufficient = assessmentStatus === "insufficient_evidence";
-  const color = isInsufficient ? "#64748b" : getStrokeColor(score);
+  const nonNumeric = NON_NUMERIC_STATES[assessmentStatus];
+  const color = nonNumeric ? nonNumeric.color : getStrokeColor(score);
 
   return (
     <div className="gauge-container" id="score-gauge">
@@ -90,10 +111,10 @@ export default function ScoreGauge({ score, assessmentStatus }) {
       </svg>
       <div className="gauge-score-text">
         <div className="gauge-number" style={{ color }}>
-          {isInsufficient ? "—" : displayScore}
+          {nonNumeric ? "—" : displayScore}
         </div>
         <div className="gauge-label">
-          {isInsufficient ? "unverified" : "evidence balance"}
+          {nonNumeric ? nonNumeric.label : "evidence balance"}
         </div>
       </div>
     </div>

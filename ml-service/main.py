@@ -41,8 +41,9 @@ from binary_truth_mlp import (
     load_artifacts,
     make_prediction_features,
 )
+from claim_triage import triage_claim
 from claim_verifier import extract_claims
-from evidence_aggregator import count_independent_groups
+from evidence_aggregator import assess_coverage, count_independent_groups
 from evidence_pipeline import run_pipeline, EvidenceResult as PipelineEvidenceResult
 from knowledge_verifier import assess_claim
 from nli_service import get_nli_service
@@ -220,6 +221,13 @@ class VerificationInfo(BaseModel):
     """The core verification outcome."""
     status: str = "insufficient_evidence"
     reasoning: str = ""
+    # What kind of proposition this is, decided before retrieval. Exposed so
+    # a caller can tell "we could not verify this" apart from "there is
+    # nothing here to verify" — the pipeline used to report both identically.
+    claim_kind: str = "checkable"
+    # "high" when a true version of the claim would necessarily have been
+    # reported. Only high-salience claims can reach unsupported_no_coverage.
+    salience: str = "normal"
 
 
 class EvidenceItem(BaseModel):
@@ -233,6 +241,10 @@ class EvidenceItem(BaseModel):
     contradiction_score: float
     source_tier: str = "unclassified"
     nli_available: bool = False
+    # Who actually published this, resolved from the aggregator link where
+    # needed. The UI shows this rather than the raw URL host, which for a
+    # Google News link would read "news.google.com" for every source.
+    publisher: str = ""
 
 
 class ClaimAssessment(BaseModel):
@@ -276,6 +288,31 @@ class CheckResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # SCORING HELPERS
 # ---------------------------------------------------------------------------
+# One canonical phrase per outcome. The whole point of the rewrite is that
+# these are genuinely different answers — "we couldn't check" and "nobody
+# reports this" used to be the same string, which is what made a fabricated
+# headline look identical to a broken search.
+_STATUS_VERDICTS: dict[str, str] = {
+    "supported": "evidence supports the claim",
+    "contradicted": "evidence contradicts the claim",
+    "mixed": "claims have mixed evidence",
+    "reported_plan": "reported as planned — not yet done",
+    "unsupported_no_coverage": "no credible source reports this",
+    "not_verifiable_yet": "not yet verifiable — describes a future event",
+    "not_a_claim": "no verifiable claim found",
+    "not_objectively_verifiable": "subjective — not objectively verifiable",
+    "insufficient_evidence": "insufficient evidence",
+}
+
+# Outcomes where the 0-100 evidence-balance dial is meaningless and must not
+# be drawn as a number. Each of these is a statement about the *claim*, not a
+# measurement of evidence weight.
+NON_NUMERIC_STATUSES = frozenset({
+    "insufficient_evidence", "not_a_claim", "not_objectively_verifiable",
+    "not_verifiable_yet", "unsupported_no_coverage",
+})
+
+
 def evidence_verdict_score(stance: dict) -> int:
     """A visual evidence balance only; it is not a probability of truth.
 
@@ -283,21 +320,41 @@ def evidence_verdict_score(stance: dict) -> int:
     it was trained on historical US political statements and is not a reliable
     universal-news classifier.
     """
-    if stance.get("status") == "insufficient_evidence":
+    if stance.get("status") in NON_NUMERIC_STATUSES:
         return 50
     net = max(-1.0, min(1.0, float(stance.get("net", 0.0))))
     return int(round(max(5, min(95, 50 + 45 * net))))
 
 
+# Statuses that describe the *claim* rather than the evidence for it. They
+# come from triage or the deterministic knowledge check, always as the single
+# summary for the whole submission, and must pass through the multi-claim
+# merge untouched — folding them into the support/contradiction averages
+# below would turn "this is a question, not a claim" into "contradicted".
+_NON_EVIDENTIAL_STATUSES = frozenset({
+    "not_a_claim", "not_objectively_verifiable",
+})
+
+
 def merge_claim_summaries(summaries: list[dict]) -> dict:
     """Use a conservative overall status for multi-claim submissions."""
-    assessed = [summary for summary in summaries if summary.get("status") != "insufficient_evidence"]
+    if len(summaries) == 1 and summaries[0].get("status") in _NON_EVIDENTIAL_STATUSES:
+        return dict(summaries[0])
+
+    assessed = [
+        summary for summary in summaries
+        if summary.get("status") not in _NON_EVIDENTIAL_STATUSES
+        and summary.get("status") != "insufficient_evidence"
+    ]
     if not assessed:
         return {
             "support": 0.0, "contradiction": 0.0, "net": 0.0,
             "verdict": "insufficient evidence", "status": "insufficient_evidence",
             "nli_available": any(summary.get("nli_available") for summary in summaries),
             "evidence_count": 0,
+            "supporting_count": sum(s.get("supporting_count", 0) for s in summaries),
+            "contradicting_count": sum(s.get("contradicting_count", 0) for s in summaries),
+            "neutral_count": sum(s.get("neutral_count", 0) for s in summaries),
         }
     support = sum(summary["support"] for summary in assessed) / len(assessed)
     contradiction = sum(summary["contradiction"] for summary in assessed) / len(assessed)
@@ -313,12 +370,36 @@ def merge_claim_summaries(summaries: list[dict]) -> dict:
         "support": support, "contradiction": contradiction, "net": net,
         "verdict": verdict, "status": status, "nli_available": True,
         "evidence_count": sum(summary.get("evidence_count", 0) for summary in assessed),
+        # These must survive the merge. assess_coverage decides whether an
+        # absence of support is a finding by reading them, so dropping them
+        # here silently reported "nobody supports this claim" for claims that
+        # had supporting evidence.
+        "supporting_count": sum(s.get("supporting_count", 0) for s in summaries),
+        "contradicting_count": sum(s.get("contradicting_count", 0) for s in summaries),
+        "neutral_count": sum(s.get("neutral_count", 0) for s in summaries),
     }
 
 
-def _compute_confidence(status: str, evidence_count: int, nli_available: bool) -> str:
-    """Categorical confidence — avoids fake-precision percentages."""
-    if status == "insufficient_evidence":
+def _compute_confidence(
+    status: str,
+    evidence_count: int,
+    nli_available: bool,
+    candidate_count: int = 0,
+) -> str:
+    """Categorical confidence — avoids fake-precision percentages.
+
+    For ``unsupported_no_coverage`` the confidence comes from how much of the
+    press we actually looked at, not from how many sources were classified:
+    the finding *is* that nothing was classified as supporting. A wide search
+    that came back empty is a stronger negative than a narrow one.
+    """
+    if status in {"not_a_claim", "not_objectively_verifiable"}:
+        return "high"  # nothing uncertain about "there is no claim here"
+    if status == "unsupported_no_coverage":
+        if candidate_count >= 15:
+            return "high"
+        return "medium" if candidate_count >= 8 else "low"
+    if status in {"insufficient_evidence", "not_verifiable_yet"}:
         return "low"
     if not nli_available:
         return "low"
@@ -327,6 +408,111 @@ def _compute_confidence(status: str, evidence_count: int, nli_available: bool) -
     if evidence_count >= 2:
         return "medium"
     return "low"
+
+
+def _build_reasoning(
+    triage,
+    status: str,
+    searched: bool,
+    candidate_count: int,
+    relevant_count: int,
+    classified_count: int,
+    independent_groups: int,
+    retrieval_status: str,
+    nli_status: str,
+) -> str:
+    """Explain, in plain English, how this verdict was reached.
+
+    This is the field the user actually reads, so it states what was searched
+    and what was found rather than restating the verdict. The pipeline used
+    to emit one of two fixed sentences here regardless of what happened,
+    which is why a correct abstention was indistinguishable from a bug.
+    """
+    if not searched:
+        return triage.reason
+
+    # How much of a search actually happened, phrased the same way each time
+    # so two results are comparable.
+    scope = (
+        f"Searched {candidate_count} source"
+        f"{'' if candidate_count == 1 else 's'} across the configured news, "
+        f"reference and web providers"
+    )
+    if relevant_count:
+        scope += (
+            f"; {relevant_count} discussed this claim and "
+            f"{classified_count} " +
+            ("was" if classified_count == 1 else "were") +
+            " compared against it by the NLI model"
+        )
+    scope += "."
+
+    if retrieval_status == "SEARCH_FAILED":
+        return (
+            "No verdict: every search provider failed or timed out, so nothing "
+            "was retrieved to check this against. This is a retrieval failure "
+            "on our side, not a finding about the claim."
+        )
+
+    if nli_status not in {"ready", "loading"} and status not in {
+        "not_a_claim", "not_objectively_verifiable"
+    }:
+        return (
+            f"{scope} No verdict: the NLI model is unavailable ({nli_status}), "
+            "so retrieved sources could not be compared against the claim. "
+            "Sources are shown as candidates only."
+        )
+
+    if status == "unsupported_no_coverage":
+        subject = "a plan of this kind" if triage.is_prospective else "an event of this kind"
+        return (
+            f"{scope} Coverage of the subjects in this claim was found, but no "
+            f"source reports what it asserts. {subject.capitalize()} would be "
+            "reported widely if it were real, so the absence of any coverage "
+            "is itself evidence against the claim — note this is different "
+            "from a failed search, which is reported separately."
+        )
+
+    if status == "reported_plan":
+        return (
+            f"{scope} Sources report this as announced or planned. That "
+            "confirms the plan was reported — it does not confirm that it has "
+            "happened or will happen."
+        )
+
+    if status == "not_verifiable_yet":
+        return (
+            f"{scope} {triage.reason} Nothing in the retrieved coverage "
+            "reports it as announced either way."
+        )
+
+    if status in {"supported", "contradicted", "mixed"}:
+        independence = (
+            f" from {independent_groups} independent publisher"
+            f"{'' if independent_groups == 1 else 's'}"
+            if independent_groups else ""
+        )
+        direction = {
+            "supported": "support", "contradicted": "contradict",
+            "mixed": "point both ways on",
+        }[status]
+        return (
+            f"{scope} {classified_count} classified source"
+            f"{'' if classified_count == 1 else 's'}{independence} {direction} "
+            "this claim."
+        )
+
+    if relevant_count == 0 and candidate_count:
+        return (
+            f"{scope} None of the retrieved sources discussed what this claim "
+            "asserts closely enough to count as evidence either way, so no "
+            "verdict is given."
+        )
+
+    return (
+        f"{scope} Nothing retrieved was strong enough to support or contradict "
+        "this claim, so no verdict is given."
+    )
 
 
 def _count_evidence_by_stance(evidence_list: list) -> dict:
@@ -351,13 +537,33 @@ async def health():
     """Comprehensive health check — reports live state of every subsystem."""
     nli_svc = get_nli_service()
 
-    # Check search provider readiness (key presence)
+    # Search provider readiness. Keyed providers report whether their key is
+    # present; keyless ones report whether they have been switched off. This
+    # is the first thing to check when results look thin — an unconfigured
+    # checkout retrieves less, and that must be visible rather than inferred.
     providers = {
-        "gnews": {"enabled": bool(os.getenv("GNEWS_API_KEY")), "status": "ready" if os.getenv("GNEWS_API_KEY") else "no_key"},
-        "guardian": {"enabled": bool(os.getenv("GUARDIAN_API_KEY")), "status": "ready" if os.getenv("GUARDIAN_API_KEY") else "no_key"},
-        "newsapi": {"enabled": bool(os.getenv("NEWSAPI_KEY")), "status": "ready" if os.getenv("NEWSAPI_KEY") else "no_key"},
-        "duckduckgo": {"enabled": True, "status": "ready"},
+        name: {
+            "enabled": bool(os.getenv(key)),
+            "status": "ready" if os.getenv(key) else "no_key",
+            "requires_key": True,
+        }
+        for name, key in (
+            ("gnews", "GNEWS_API_KEY"),
+            ("guardian", "GUARDIAN_API_KEY"),
+            ("newsapi", "NEWSAPI_KEY"),
+        )
     }
+    for name, flag in (
+        ("google_news", "GOOGLE_NEWS_ENABLED"),
+        ("wikipedia", "WIKIPEDIA_ENABLED"),
+        ("duckduckgo", "DUCKDUCKGO_ENABLED"),
+    ):
+        on = _env_flag(flag, default=True)
+        providers[name] = {
+            "enabled": on,
+            "status": "ready" if on else "disabled",
+            "requires_key": False,
+        }
 
     return {
         "status": "ok",
@@ -406,7 +612,14 @@ def check_statement(request: CheckRequest):
     ml_verdict = explain_probability(ml_score)
     knowledge_assessment = assess_claim(statement)
 
-    # --- 2. Claim extraction and evidence phase ---
+    # --- 2. Triage: what kind of question does this claim even pose? ---
+    # Done before any network work. Sending "is the earth flat?" or a string
+    # of keyboard mash through four search queries and an NLI model wastes
+    # the request budget and — worse — dresses the result up as a failed
+    # verification rather than saying there is nothing here to verify.
+    triage = triage_claim(statement)
+
+    # --- 3. Claim extraction and evidence phase ---
     # A long submission may contain several independently checkable claims.
     claims = extract_claims(statement, max_claims=3)
     claim_summaries = []
@@ -415,6 +628,7 @@ def check_statement(request: CheckRequest):
     retrieval_diagnostics = []
     candidate_count = 0
     relevant_count = 0
+    searched = False
 
     if knowledge_assessment:
         status = knowledge_assessment["status"]
@@ -426,7 +640,18 @@ def check_statement(request: CheckRequest):
             "verdict": knowledge_assessment["verdict"],
             "status": status, "nli_available": False, "evidence_count": 0,
         })]
+    elif not triage.search_worthwhile:
+        # Nothing external could settle this — a question, a fragment, a
+        # value judgment. Report that plainly instead of running a search
+        # whose emptiness would then be misread as a verification failure.
+        status = "not_objectively_verifiable" if triage.kind == "opinion" else "not_a_claim"
+        claim_summaries = [(statement, {
+            "support": 0.0, "contradiction": 0.0, "net": 0.0,
+            "verdict": _STATUS_VERDICTS[status], "status": status,
+            "nli_available": False, "evidence_count": 0,
+        })]
     else:
+        searched = True
         # One budget shared across every claim, so a multi-claim statement
         # can't multiply the worst case by the number of claims.
         pipeline_deadline = time.monotonic() + EVIDENCE_BUDGET_SECONDS
@@ -456,6 +681,40 @@ def check_statement(request: CheckRequest):
             retrieval_status = "SEARCH_FAILED"
 
     ev_stance = merge_claim_summaries([summary for _, summary in claim_summaries])
+
+    # --- 4. Reinterpret the aggregate in light of the triage -----------
+    # Two adjustments, both about not conflating different kinds of silence:
+    #
+    #   a) Absence of coverage. A search that ran correctly across several
+    #      providers and turned up nothing supporting a claim whose true
+    #      version would have been front-page news is a finding, not a
+    #      failure. It becomes "no credible source reports this" — never
+    #      "true" or "false", and never when the search itself broke.
+    #
+    #   b) Future events. Nothing can make a prospective claim true today.
+    #      Supporting coverage means the plan was *reported*, not that it
+    #      happened; the absence of it means no such plan is on record.
+    nli_svc = get_nli_service()
+    if searched:
+        override = assess_coverage(
+            ev_stance,
+            retrieval_status=retrieval_status,
+            candidate_count=candidate_count,
+            salience=triage.salience,
+            prospective=triage.is_prospective,
+            nli_ready=nli_svc.is_available,
+            negated=triage.negated,
+        )
+        if override is not None:
+            ev_stance = override
+        elif triage.is_prospective:
+            if ev_stance["status"] == "supported":
+                ev_stance = {**ev_stance, "status": "reported_plan",
+                             "verdict": _STATUS_VERDICTS["reported_plan"]}
+            elif ev_stance["status"] == "insufficient_evidence":
+                ev_stance = {**ev_stance, "status": "not_verifiable_yet",
+                             "verdict": _STATUS_VERDICTS["not_verifiable_yet"]}
+
     # This is the amount of strong, classified evidence available, not a
     # similarity score and not a probability that the claim is true.
     ev_score = min(
@@ -468,7 +727,7 @@ def check_statement(request: CheckRequest):
         knowledge_assessment["verdict"] if knowledge_assessment else ev_stance["verdict"]
     )
 
-    # --- 3. Build top evidence list ---
+    # --- 5. Build top evidence list ---
     top_evidence = []
     seen_urls = set()
     ranked_evidence = sorted(
@@ -491,32 +750,37 @@ def check_statement(request: CheckRequest):
             contradiction_score=round(result.contradiction_score, 3),
             source_tier=result.source_tier,
             nli_available=result.nli_available,
+            publisher=result.publisher or "",
         ))
         if len(top_evidence) == 8:
             break
 
-    # --- 4. Compute evidence counts ---
-    nli_svc = get_nli_service()
+    # --- 6. Compute evidence counts ---
     evidence_counts = _count_evidence_by_stance(all_evidence)
     nli_classified = sum(1 for e in all_evidence if e.nli_available)
 
-    # Compute confidence
     confidence = (
         knowledge_assessment["confidence"] if knowledge_assessment
         else _compute_confidence(
             ev_stance["status"],
             ev_stance.get("evidence_count", 0),
             ev_stance.get("nli_available", False),
+            candidate_count=candidate_count,
         )
     )
 
-    # Compute reasoning
     reasoning = (
         knowledge_assessment["reasoning"] if knowledge_assessment
-        else (
-            "Relevant external evidence was found and classified."
-            if any(e.nli_available and e.stance in {"supports", "contradicts", "mixed"} for e in all_evidence)
-            else "External evidence was searched, but no source met the relevance and evidence-quality requirements."
+        else _build_reasoning(
+            triage=triage,
+            status=ev_stance["status"],
+            searched=searched,
+            candidate_count=candidate_count,
+            relevant_count=relevant_count,
+            classified_count=nli_classified,
+            independent_groups=count_independent_groups(all_evidence),
+            retrieval_status=retrieval_status,
+            nli_status=nli_svc.status["status"],
         )
     )
 
@@ -525,13 +789,18 @@ def check_statement(request: CheckRequest):
     # --- 5. Build response ---
     return CheckResponse(
         statement=statement,
-        claim_type=knowledge_assessment["claim_type"] if knowledge_assessment else "general factual",
+        claim_type=(
+            knowledge_assessment["claim_type"] if knowledge_assessment
+            else triage.claim_type
+        ),
         verdict=combined_verdict,
         confidence=confidence,
 
         verification=VerificationInfo(
             status=ev_stance["status"],
             reasoning=reasoning,
+            claim_kind=triage.kind,
+            salience=triage.salience,
         ),
         ml=MLInfo(
             available=True,
@@ -592,7 +861,7 @@ def check_statement(request: CheckRequest):
             result.nli_available and result.stance in {"supports", "contradicts", "mixed"}
             for result in all_evidence
         ),
-        external_evidence_checked=not bool(knowledge_assessment),
+        external_evidence_checked=searched,
     )
 
 

@@ -9,6 +9,12 @@ CHANGES FROM LEGACY:
 - Shows best_sentence from NLI-verified passage, not arbitrary snippet
 - Explains why this source matters for the claim
 - Shows support/contradiction scores instead of generic similarity
+- Says plainly when a source does NOT address the claim. Previously any
+  NLI-classified card claimed the source "supports" or "contradicts" the
+  claim, chosen by whichever score was larger — so an article the model had
+  explicitly judged neutral (0.04 vs 0.03) was described as contradicting it.
+  That single sentence is what made on-topic-but-unrelated results look like
+  the system misunderstanding the claim.
 */
 
 function getFaviconUrl(url) {
@@ -34,6 +40,7 @@ function getSourceTierBadge(tier) {
     'primary': 'Primary Source',
     'fact-check': 'Fact Check',
     'reporting': 'News Reporting',
+    'reference': 'Reference Work',
     'unclassified': 'General Source',
   };
   return tierLabels[tier] || 'Source';
@@ -50,16 +57,25 @@ export default function EvidenceCard({ evidence, index }) {
     contradiction_score,
     source_tier,
     nli_available,
+    publisher,
   } = evidence;
 
   const favicon = getFaviconUrl(url);
-  const domain = source || getDomain(url);
+  // Prefer the resolved publisher: for a source reached through a news
+  // aggregator the URL's host names the aggregator, so every card would
+  // otherwise read "news.google.com".
+  const domain = publisher || source || getDomain(url);
   const tierLabel = getSourceTierBadge(source_tier);
 
   // Determine if this evidence supports or contradicts
   const isSupportive = support_score > contradiction_score;
   const strength = Math.max(support_score, contradiction_score);
   const strengthLabel = strength > 0.7 ? 'Strong' : strength > 0.4 ? 'Moderate' : 'Weak';
+
+  // "unclear" is the NLI model's considered answer that this passage neither
+  // entails nor contradicts the claim — a real result, not a missing one.
+  const addressesClaim = stance === 'supports' || stance === 'contradicts';
+  const stanceLabel = addressesClaim ? stance : "doesn't address claim";
 
   return (
     <div
@@ -88,7 +104,7 @@ export default function EvidenceCard({ evidence, index }) {
             {nli_available ? "Verified" : "Unverified"}
           </span>
           <span className={`stance-badge ${stance} ${strengthLabel.toLowerCase()}`}>
-            {stance}
+            {stanceLabel}
           </span>
         </div>
       </div>
@@ -102,8 +118,9 @@ export default function EvidenceCard({ evidence, index }) {
         {title || "Untitled"}
       </a>
 
-      {/* Evidence strength indicator */}
-      {nli_available && (
+      {/* Evidence strength indicator — only meaningful when the source
+          actually takes a position on the claim. */}
+      {nli_available && addressesClaim && (
         <div className="evidence-strength">
           <span className="strength-label">{strengthLabel} Evidence</span>
           <div className="strength-bar-track">
@@ -127,14 +144,17 @@ export default function EvidenceCard({ evidence, index }) {
       {/* Explanation of why this source matters */}
       <div className="evidence-explanation">
         <p className="explanation-text">
-          {nli_available ? (
+          {!nli_available ? (
+            'This source was retrieved but not checked against the claim — the NLI model was unavailable, so it counts as a candidate, not evidence.'
+          ) : addressesClaim ? (
             <>
               This {tierLabel.toLowerCase()} {isSupportive ? 'supports' : 'contradicts'} the claim.
               {source_tier === 'primary' && ' Primary sources carry significant weight.'}
               {source_tier === 'fact-check' && ' Fact-checking organizations provide expert analysis.'}
+              {source_tier === 'reference' && ' Reference works are useful background but are tertiary sources.'}
             </>
           ) : (
-            'Evidence classification requires NLI model, which was unavailable.'
+            'This source covers the same subject but states neither that the claim is true nor that it is false, so it does not count as evidence either way.'
           )}
         </p>
       </div>

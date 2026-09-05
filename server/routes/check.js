@@ -148,7 +148,12 @@ router.post("/", optionalAuth, async (req, res) => {
           reasoning: result.reasoning,
           externalEvidenceAvailable: result.external_evidence_available,
           externalEvidenceChecked: result.external_evidence_checked,
-          verification: result.verification,
+          verification: result.verification && {
+            status: result.verification.status,
+            reasoning: result.verification.reasoning,
+            claimKind: result.verification.claim_kind,
+            salience: result.verification.salience,
+          },
           ml: result.ml && {
             available: result.ml.available,
             auxiliaryOnly: result.ml.auxiliary_only,

@@ -34,6 +34,7 @@ const evidenceItemSchema = new mongoose.Schema(
     best_sentence: String,       // The specific sentence in the article that best matches the statement
     support_score: Number,       // NLI model's confidence that it supports
     contradiction_score: Number, // NLI model's confidence that it contradicts
+    publisher: String,           // Who actually published it, resolved from aggregator links
     source_tier: String,         // primary, fact-check, reporting, or unclassified
     nli_available: Boolean,      // Whether the stance came from the NLI model
   },
@@ -124,6 +125,11 @@ const checkSchema = new mongoose.Schema(
     verification: {
       status: String,
       reasoning: String,
+      // What kind of proposition this was and whether a true version of it
+      // would necessarily have been reported. Persisted so replaying a saved
+      // check from history renders the same verdict wording as the live one.
+      claimKind: String,
+      salience: String,
     },
     ml: {
       available: Boolean,

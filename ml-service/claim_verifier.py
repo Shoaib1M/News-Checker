@@ -34,6 +34,37 @@ REPUTABLE_REPORTING_DOMAINS = {
 }
 
 
+# Wikipedia and comparable reference works are real background evidence for
+# timeless claims, but they are tertiary sources: below original reporting,
+# above an unknown blog.
+REFERENCE_DOMAINS = {
+    "en.wikipedia.org", "wikipedia.org", "britannica.com",
+}
+
+# Aggregators serve other publishers' journalism from their own hostname.
+# Tiering by that hostname would file every Reuters story that arrived via
+# Google News as "unclassified", and counting independence by it would
+# collapse ten different newsrooms into one "independent" group. Both are
+# resolved by the publisher name the provider reports alongside the link.
+AGGREGATOR_HOSTS = {"news.google.com", "google.com"}
+
+# Publisher names as news feeds write them, mapped to the domain the tier
+# tables are keyed on.
+_PUBLISHER_DOMAINS = {
+    "reuters": "reuters.com", "associated press": "apnews.com",
+    "ap news": "apnews.com", "bbc": "bbc.com", "bbc news": "bbc.com",
+    "npr": "npr.org", "the guardian": "theguardian.com",
+    "guardian": "theguardian.com", "financial times": "ft.com",
+    "bloomberg": "bloomberg.com", "nature": "nature.com",
+    "science": "science.org", "the new york times": "nytimes.com",
+    "new york times": "nytimes.com", "the washington post": "washingtonpost.com",
+    "washington post": "washingtonpost.com", "the wall street journal": "wsj.com",
+    "wall street journal": "wsj.com", "politifact": "politifact.com",
+    "factcheck.org": "factcheck.org", "full fact": "fullfact.org",
+    "snopes": "snopes.com",
+}
+
+
 @dataclass(frozen=True)
 class SourceProfile:
     tier: str
@@ -44,13 +75,40 @@ def _matches_domain(host: str, domain: str) -> bool:
     return host == domain or host.endswith(f".{domain}")
 
 
-def classify_source(url: str) -> SourceProfile:
-    """Return a transparent source tier used for aggregation safeguards."""
-    parsed = urlparse(url)
-    host = parsed.netloc.lower().split(":")[0]
+def resolve_publisher_host(url: str, source_name: str = "") -> str:
+    """Return the host that identifies who actually published this article.
+
+    For a direct link that is the URL's own host. For an aggregator link it
+    is derived from the publisher name the search provider supplied, falling
+    back to a slug of that name so two different publishers never collapse
+    into one identity.
+    """
+    host = urlparse(url).netloc.lower().split(":")[0]
     if host.startswith("www."):
         host = host[4:]
-    path = parsed.path.lower()
+
+    if host not in AGGREGATOR_HOSTS or not source_name:
+        return host
+
+    normalized = re.sub(r"\s+", " ", source_name.strip().lower())
+    mapped = _PUBLISHER_DOMAINS.get(normalized)
+    if mapped:
+        return mapped
+    if "." in normalized and " " not in normalized:
+        return normalized  # the feed already gave us a domain
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    return f"{slug}.publisher" if slug else host
+
+
+def classify_source(url: str, source_name: str = "") -> SourceProfile:
+    """Return a transparent source tier used for aggregation safeguards.
+
+    ``source_name`` is the publisher the search provider reported. It is what
+    makes tiering work for aggregator links, whose URL host names the
+    aggregator rather than the newsroom.
+    """
+    host = resolve_publisher_host(url, source_name)
+    path = urlparse(url).path.lower()
 
     if any(_matches_domain(host, domain) for domain in PRIMARY_SOURCE_DOMAINS):
         return SourceProfile("primary", 1.0)
@@ -60,6 +118,8 @@ def classify_source(url: str) -> SourceProfile:
         return SourceProfile("fact-check", 0.95)
     if any(_matches_domain(host, domain) for domain in REPUTABLE_REPORTING_DOMAINS):
         return SourceProfile("reporting", 0.8)
+    if any(_matches_domain(host, domain) for domain in REFERENCE_DOMAINS):
+        return SourceProfile("reference", 0.5)
     return SourceProfile("unclassified", 0.0)
 
 

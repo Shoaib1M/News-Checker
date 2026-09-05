@@ -463,11 +463,45 @@
   gap: 0.6rem;
 }
 
+/* Separate the bars from the assessment notes stacked directly above them,
+   which previously butted straight into the first row. */
+#score-breakdown { margin-top: 0.75rem; }
+
+/* Fixed basis so all three bars start at the same x. With only a min-width
+   the label sized to its own text and every row's bar began somewhere
+   different, which is what made this block look misaligned. */
 .breakdown-label {
+  flex: 0 0 118px;
   font-size: 0.72rem;
   font-weight: 500;
   color: var(--gray-500);
-  min-width: 65px;
+  line-height: 1.3;
+}
+
+/* The legacy ML prior is shown for transparency but takes no part in the
+   verdict, so it reads as a footnote rather than a peer of the evidence rows. */
+.breakdown-item-muted { opacity: 0.55; }
+.breakdown-item-muted .breakdown-bar-fill { background: var(--gray-400); }
+
+.breakdown-caption {
+  font-size: 0.68rem;
+  color: var(--gray-400);
+  margin: 0.15rem 0 0;
+  line-height: 1.4;
+}
+
+/* Narrow screens: a fixed label column forced two-line labels and uneven row
+   heights, so stack the label above its bar instead of shrinking it. */
+@media (max-width: 480px) {
+  .breakdown-item {
+    flex-wrap: wrap;
+    gap: 0.2rem 0.6rem;
+  }
+  .breakdown-label {
+    flex: 1 0 100%;
+    font-size: 0.68rem;
+  }
+  .breakdown-bar-track { flex: 1 1 auto; }
 }
 
 .breakdown-bar-track {
