@@ -420,3 +420,72 @@ class TestNegatedClaims(VerdictCaseMixin, unittest.TestCase):
             results=make_results(TestProspectiveClaims.BACKGROUND),
         )
         self.assertEqual(body["verification"]["status"], "unsupported_no_coverage")
+
+
+# ── 7. Contradicting evidence must survive relevance filtering ───────
+class TestContradictingEvidenceSurvives(VerdictCaseMixin, unittest.TestCase):
+    """A refutation is written in its own words, not the claim's.
+
+    The relevance filter scores whether a document discusses the claim's
+    action. Applied naively that rejects contradicting coverage — which
+    describes the *opposite* outcome and so shares almost none of the claim's
+    vocabulary — and leaves a one-sided "supported" verdict on a claim that is
+    actually contested. This is the failure mode that matters most: it is the
+    one where the system states something confidently and wrongly.
+    """
+
+    def test_a_contested_claim_comes_back_mixed_not_supported(self):
+        results = make_results([
+            ("bbc.com", "Trial finds four-day week improves productivity",
+             "The pilot found a four-day workweek improves productivity."),
+            ("wsj.com", "Study casts doubt on four-day week gains",
+             "Researchers said output fell under the shorter schedule."),
+        ])
+        body = self.check(
+            "A four-day workweek improves productivity",
+            results=results,
+            nli=StubNLI(entail_on="improves productivity", contradict_on="output fell"),
+        )
+        self.assertEqual(body["verification"]["status"], "mixed")
+        self.assertGreater(body["evidence"]["supporting_count"], 0)
+        self.assertGreater(body["evidence"]["contradicting_count"], 0)
+
+    def test_the_antonym_of_the_claims_action_still_counts_as_on_topic(self):
+        from relevance_filter import RelevanceFilter
+        filt = RelevanceFilter()
+        score = filt.assess_document_relevance(
+            "The United States is going to ban Google across all its cities",
+            "Court declines to outlaw Google search deals",
+            "Judges rejected calls to prohibit the arrangements.",
+            "Judges rejected calls to prohibit the arrangements. " * 20,
+        )
+        self.assertEqual(score.action_match_score, 1.0)
+        self.assertTrue(filt.should_include_document(score, strict=True))
+
+    def test_an_off_topic_article_is_still_rejected(self):
+        """Control: relaxing the filter must not readmit the original bug."""
+        from relevance_filter import RelevanceFilter
+        filt = RelevanceFilter()
+        score = filt.assess_document_relevance(
+            "The United States is going to ban Google across all its cities",
+            "Google expands advertising tools in the United States",
+            "Google announced new ad products for US businesses.",
+            "Google announced new ad products for US businesses. " * 20,
+        )
+        self.assertEqual(score.action_match_score, 0.0)
+        self.assertFalse(filt.should_include_document(score, strict=True))
+
+
+class TestKnowledgeVerifierTraps(unittest.TestCase):
+    """knowledge_verifier runs before triage and had its own copy of a bug."""
+
+    def test_factual_superlatives_are_not_caught_as_subjective(self):
+        from knowledge_verifier import assess_claim
+        self.assertIsNone(assess_claim("The best-selling car in 2024 was the Tesla Model Y"))
+        self.assertIsNone(assess_claim("Reuters is the best-known wire service by revenue"))
+
+    def test_genuine_value_judgments_are_still_caught(self):
+        from knowledge_verifier import assess_claim
+        result = assess_claim("Pizza is the best food in the world")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "not_objectively_verifiable")

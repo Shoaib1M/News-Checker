@@ -45,10 +45,13 @@ _EVENT_VERBS: dict[str, tuple[str, ...]] = {
                "attacks", "attacked", "strike", "strikes", "war"),
     "increase": ("increase", "increases", "increased", "rise", "rises",
                  "rose", "rising", "surge", "surges", "surged", "grew",
-                 "growth", "higher", "up"),
+                 "growth", "higher", "up", "improve", "improves", "improved",
+                 "improvement", "boost", "boosts", "boosted", "gain", "gains"),
     "decrease": ("decrease", "decreases", "decreased", "fall", "falls",
                  "fell", "falling", "drop", "drops", "dropped", "decline",
-                 "declines", "declined", "lower", "down", "cut", "cuts"),
+                 "declines", "declined", "lower", "down", "cut", "cuts",
+                 "worsen", "worsens", "worsened", "harm", "harms", "harmed",
+                 "casts doubt", "no effect"),
     "approve": ("approve", "approves", "approved", "approval", "pass",
                 "passes", "passed", "enact", "enacts", "enacted", "signed"),
     "reject": ("reject", "rejects", "rejected", "deny", "denies", "denied",
@@ -75,6 +78,23 @@ _SURFACE_TO_EVENT: dict[str, str] = {
     for event, forms in _EVENT_VERBS.items()
     for form in forms
 }
+
+# Evidence *against* a claim usually states the opposite action, not the
+# claim's own. For "a four-day workweek improves productivity", the study that
+# refutes it is headlined "output fell under the shorter schedule" — no word
+# from the "increase" family anywhere in it. Matching only the claim's own
+# action therefore filtered out exactly the contradicting sources the system
+# exists to find, leaving a one-sided "supported" verdict on a genuinely
+# contested claim. Each pair is symmetric and both directions are registered.
+_ACTION_ANTONYMS: dict[str, str] = {}
+for _a, _b in (
+    ("increase", "decrease"),
+    ("approve", "reject"),
+    ("ban", "legalize"),
+    ("launch", "close"),
+):
+    _ACTION_ANTONYMS[_a] = _b
+    _ACTION_ANTONYMS[_b] = _a
 
 
 @dataclass
@@ -365,7 +385,7 @@ class RelevanceFilter:
         return events
 
     def _score_action_match(self, claim_events: Set[str], doc_combined: str) -> float:
-        """1.0 if the document discusses any event the claim asserts, else 0.0.
+        """1.0 if the document discusses the claim's event — or its opposite.
 
         Neutral (0.5) when the claim asserts no recognized event, so claims
         outside the vocabulary are scored exactly as they were before.
@@ -373,7 +393,14 @@ class RelevanceFilter:
         if not claim_events:
             return 0.5
         lowered = f" {doc_combined.lower()} "
-        for event in claim_events:
+        # The claim's own action, plus its opposite: a source that contradicts
+        # the claim is about the same event, stated the other way round.
+        wanted = set(claim_events)
+        wanted.update(
+            _ACTION_ANTONYMS[event] for event in claim_events
+            if event in _ACTION_ANTONYMS
+        )
+        for event in wanted:
             for surface in _EVENT_VERBS[event]:
                 if re.search(rf"(?<![a-z]){re.escape(surface)}(?![a-z])", lowered):
                     return 1.0
@@ -446,7 +473,14 @@ class RelevanceFilter:
             return False
         if relevance_score.entity_match_score < 0.5 and relevance_score.predicate_match_score < 0.5:
             return False
-        if relevance_score.predicate_match_score < 0.25:
+        # A document can discuss exactly the event the claim is about while
+        # sharing almost none of the claim's wording — which is typical of
+        # contradicting coverage, since it describes the opposite outcome in
+        # its own vocabulary. Rejecting on predicate overlap alone dropped
+        # those, leaving one-sided "supported" verdicts on contested claims.
+        # A definite action match is the stronger predicate signal, so it
+        # overrides this floor.
+        if relevance_score.predicate_match_score < 0.25 and relevance_score.action_match_score < 1.0:
             return False
         return True
     
