@@ -374,3 +374,51 @@ no live link at all.
   with local usage and explains why; the Render/Vercel instructions are kept
   as optional reference material under a collapsed `<details>` block, not
   presented as the project's actual current hosting.
+
+## 2026-09-05 (follow-up 3): root-caused the recurring "ML service timed out"
+
+The `/api/check` request kept dying against the Node proxy's timeout, even
+after that timeout was raised to 180s. Three compounding causes, all
+measured rather than assumed:
+
+1. **No time budget anywhere in the pipeline.** Retrieval ran 4 queries
+   sequentially, each with 3 attempts x 10s + backoff — a measured **138s
+   for a single claim** when DuckDuckGo blocks scripted requests (it does
+   this routinely). Article extraction added up to 8 more sequential
+   fetches at 3 attempts x 8s each (~228s). A multi-claim statement ran the
+   whole thing again per claim, so a 3-sentence input reached ~414s of
+   search alone. No upstream timeout could ever be "big enough".
+   - Added a `deadline` threaded through `run_pipeline` →
+     `search_all_providers` → the article-fetch loop, with a single budget
+     (`EVIDENCE_BUDGET_SECONDS`, default 45s) shared across all claims.
+     Work outstanding at the deadline is abandoned and reported as a
+     `timeout` provider diagnostic — never silently as "no results".
+   - Provider queries and article fetches now run in thread pools instead
+     of sequentially, and retries/timeouts were cut (DDG 10s x3 → 6s x2;
+     article 10s x3 → 6s x1).
+   - Measured after: blocked-search case **138s → 13s**; hanging-article
+     case **~228s → 7s**; 3-claim statement **~414s → 40s**, returning
+     HTTP 200 with an honest `SEARCH_FAILED`.
+
+2. **`/api/check` was `async def` while doing blocking I/O.** urllib fetches
+   and PyTorch inference ran directly on FastAPI's event loop, freezing the
+   whole service for the duration — including `/api/health`. That is why the
+   ml-service looked completely dead during a check and logged nothing
+   (uvicorn only writes its access line once a response completes). Changed
+   to a sync `def` so FastAPI runs it in its threadpool.
+
+3. **Entity extraction was rejecting relevant articles.** For "The United
+   States is Banning google across all its counties" it produced
+   `['The United States', 'Banning', 'United States']` — a duplicate of the
+   same entity, a capitalized *verb*, and no `google` at all (lowercase
+   words were never extracted). A clearly relevant headline scored 0.379
+   against the 0.42 strict threshold and was dropped. Fixed by stripping
+   leading articles, rejecting verb forms, and recognising common
+   organisations written lowercase. The same headline now scores 0.645 and
+   is included, while the previously-fixed false positive (a Google
+   *advertising* article for a Google *ban* claim) still scores 0.333 and
+   stays rejected.
+
+Tests: 41 → 48, including `tests/test_pipeline_budget.py`, which locks in
+the budget guarantee for the single-claim, hanging-article, expired-deadline
+and multi-claim-endpoint cases.

@@ -33,19 +33,57 @@ class ClaimDecomposition:
         return self.primary_entities[:3] if self.primary_entities else list(self.entities_in_claim)[:3]
 
 
+# Capitalized words that are never the entity of a claim. Sentence-initial
+# capitalization and mid-sentence emphasis both produce these.
+_CAPITALIZED_NON_ENTITIES = {
+    'The', 'A', 'An', 'This', 'That', 'These', 'Those', 'Is', 'Was', 'Are',
+    'Were', 'Be', 'Been', 'Has', 'Have', 'Had', 'Do', 'Does', 'Did', 'At',
+    'By', 'To', 'In', 'On', 'Of', 'And', 'Or', 'But', 'If', 'I', 'As', 'For',
+    'With', 'From', 'It', 'Its', 'All', 'Across', 'After', 'Before', 'Not',
+    'No', 'New', 'Now', 'Will', 'Would', 'Can', 'Could', 'May', 'Might',
+    'Said', 'Says', 'According',
+}
+
+
+def _looks_like_verb(word: str) -> bool:
+    """True for single words that are verb forms rather than names.
+
+    Users capitalize verbs mid-sentence surprisingly often ("is Banning
+    google"), and a verb admitted as a named entity both dilutes the entity
+    match score and sends the retriever looking for the wrong thing.
+    """
+    lowered = word.lower()
+    return (
+        " " not in word
+        and (lowered.endswith("ing") or lowered.endswith("ed"))
+        and len(word) > 4
+    )
+
+
 def extract_entities(text: str) -> List[str]:
-    """Extract capitalized named entities from text."""
+    """Extract named entities from text.
+
+    Handles three cases the naive capitalized-phrase regex gets wrong:
+    leading articles ("The United States" and "United States" are one
+    entity, not two), capitalized verbs, and well-known proper nouns the
+    user left lowercase ("google").
+    """
     entities = []
-    
+
     # First, try to match capitalized phrases (standard entity case)
     pattern = r'\b([A-Z][a-z]*(?:\s+[A-Z][a-z]*)*)\b'
     for match in re.finditer(pattern, text):
         entity = match.group(1)
-        if entity not in {'The', 'A', 'An', 'This', 'That', 'Is', 'Was', 'At', 'By', 'To', 'In', 'Of', 'And', 'Or', 'I', 'As', 'For', 'With', 'From'}:
-            entities.append(entity)
-    
-    # Also look for known multi-word entities that might be lowercase
-    # (common place names and organizations)
+        # "The United States" and "United States" are the same entity; keep
+        # one form so a single match doesn't score as a partial one.
+        entity = re.sub(r'^(?:The|A|An)\s+', '', entity).strip()
+        if not entity or entity in _CAPITALIZED_NON_ENTITIES:
+            continue
+        if _looks_like_verb(entity):
+            continue
+        entities.append(entity)
+
+    # Also look for known entities that are commonly written lowercase.
     known_multiword_patterns = [
         r'\bunited\s+states\b',
         r'\bunited\s+kingdom\b',
@@ -58,8 +96,13 @@ def extract_entities(text: str) -> List[str]:
         r'\bnasa\b',
         r'\basteroid\b',
         r'\b(us|usa)\b',  # Abbreviations
+        # Organizations that dominate news claims and are routinely typed
+        # in lowercase, which the capitalized-phrase regex above misses.
+        r'\bgoogle\b', r'\bapple\b', r'\bmicrosoft\b', r'\bamazon\b',
+        r'\bmeta\b', r'\bfacebook\b', r'\btwitter\b', r'\btiktok\b',
+        r'\bopenai\b', r'\btesla\b',
     ]
-    
+
     for pattern in known_multiword_patterns:
         matches = re.findall(pattern, text, re.IGNORECASE)
         for match in matches:

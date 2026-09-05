@@ -15,6 +15,8 @@ A source only becomes "evidence" after step 6.  Before that it is a "candidate".
 
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -62,16 +64,30 @@ _query_generator = QueryGenerator()
 _relevance_filter = RelevanceFilter()
 
 
+DEFAULT_BUDGET_SECONDS = 45.0
+# Share of the budget retrieval may consume before article extraction starts.
+_SEARCH_BUDGET_SHARE = 0.5
+
+
 def run_pipeline(
     claim: str,
     max_results: int = 8,
     fetch_articles: bool = True,
+    deadline: float | None = None,
 ) -> PipelineOutcome:
     """Execute the complete evidence pipeline for a single claim.
+
+    ``deadline`` is an absolute ``time.monotonic()`` value bounding the whole
+    run. Every network stage checks it, so a blocked search provider or a
+    stalling news site degrades this to partial results instead of running
+    until the caller's HTTP timeout fires. Defaults to
+    ``DEFAULT_BUDGET_SECONDS`` from now.
 
     Returns a PipelineOutcome containing the stance summary, classified
     evidence, retrieval status, and per-provider diagnostics.
     """
+    if deadline is None:
+        deadline = time.monotonic() + DEFAULT_BUDGET_SECONDS
 
     # ── Stage 1: Query generation ────────────────────────────────────
     query_variants = _query_generator.generate_queries(claim)
@@ -80,7 +96,12 @@ def run_pipeline(
         queries = [claim]
 
     # ── Stage 2: Multi-provider search ───────────────────────────────
-    raw_results, diagnostics = search_all_providers(queries)
+    # Cap search at half the budget so extraction and NLI still get a turn.
+    search_deadline = min(
+        deadline,
+        time.monotonic() + (deadline - time.monotonic()) * _SEARCH_BUDGET_SHARE,
+    )
+    raw_results, diagnostics = search_all_providers(queries, deadline=search_deadline)
     diagnostics_dicts = [d.to_dict() for d in diagnostics]
     candidate_count = len(raw_results)
 
@@ -125,26 +146,49 @@ def run_pipeline(
         )
 
     # ── Stage 4: Article extraction ──────────────────────────────────
+    # Fetched concurrently: search-result snippets are usually too short to
+    # judge, so nearly every candidate needs its page pulled. Doing that one
+    # at a time meant a handful of stalling news sites serialized into
+    # minutes of wall time.
+    selected = included[:max_results]
+    fetched_articles: dict[str, tuple[str, str]] = {}
+
+    if fetch_articles:
+        needs_fetch = [
+            d for d in selected
+            if len((d.get("text") or "").split()) < 30
+        ]
+        if needs_fetch and time.monotonic() < deadline:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futures = [
+                    (d["url"], pool.submit(extract_article, d["url"], 6))
+                    for d in needs_fetch
+                ]
+                for url, future in futures:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        future.cancel()
+                        continue
+                    try:
+                        fetched_articles[url] = future.result(timeout=remaining)
+                    except Exception:
+                        pass  # Fall back to the snippet we already have
+
     nli_service = get_nli_service()
     evidence_results: list[EvidenceResult] = []
 
-    for doc in included[:max_results]:
+    for doc in selected:
         url = doc["url"]
         title = doc.get("title", "")
         snippet = doc.get("snippet", "")
         full_text = doc.get("text", "")
         source_profile = classify_source(url)
 
-        # Try fetching full article if we only have a snippet
-        if fetch_articles and len((full_text or "").split()) < 30:
-            try:
-                fetched_title, fetched_text = extract_article(url, timeout=8)
-                if fetched_text and len(fetched_text.split()) > len((full_text or "").split()):
-                    full_text = fetched_text
-                if fetched_title and not title:
-                    title = fetched_title
-            except Exception:
-                pass  # Use snippet/text we already have
+        fetched_title, fetched_text = fetched_articles.get(url, ("", ""))
+        if fetched_text and len(fetched_text.split()) > len((full_text or "").split()):
+            full_text = fetched_text
+        if fetched_title and not title:
+            title = fetched_title
 
         # ── Stage 5: NLI classification ──────────────────────────────
         passages = extract_passages(title, snippet, full_text)

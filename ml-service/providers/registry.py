@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from providers import SearchResult, ProviderDiagnostic
@@ -68,62 +70,90 @@ def deduplicate(results: list[SearchResult]) -> list[SearchResult]:
 
 
 # ── Orchestration ────────────────────────────────────────────────────
+def _run_one(
+    name: str, query: str, search_fn: Callable, max_results: int, enabled: bool,
+) -> tuple[ProviderDiagnostic, list[SearchResult]]:
+    """Run a single provider/query pair, capturing its outcome as a diagnostic."""
+    diag = ProviderDiagnostic(provider=name, query=query, enabled=enabled)
+    if not enabled:
+        return diag, []
+    try:
+        results = search_fn(query, max_results=max_results)
+        diag.status = "success" if results else "no_results"
+        diag.raw_result_count = len(results)
+        return diag, results
+    except Exception as exc:
+        diag.status = "failed"
+        diag.error = str(exc)
+        return diag, []
+
+
 def search_all_providers(
     queries: list[str],
     max_per_provider: int = 5,
     use_duckduckgo: bool = True,
+    deadline: float | None = None,
 ) -> tuple[list[SearchResult], list[ProviderDiagnostic]]:
-    """Run all configured providers with multiple query variants.
+    """Run all configured providers with multiple query variants, concurrently.
+
+    Every provider/query pair is independent, so they run in a thread pool
+    rather than one after another — previously a single blocked provider
+    stalled every remaining query in sequence.
+
+    ``deadline`` is an absolute ``time.monotonic()`` value. Work still
+    outstanding when it passes is abandoned and reported as a ``timeout``
+    diagnostic, so retrieval degrades to partial results instead of
+    overrunning the caller's request budget.
 
     Returns (deduplicated_results, diagnostics).
     """
-    all_results: list[SearchResult] = []
-    diagnostics: list[ProviderDiagnostic] = []
-    seen_urls: set[str] = set()
+    jobs: list[tuple[str, str, Callable, int, bool]] = []
 
     for query in queries[:4]:  # Limit to top 4 queries
         for name, env_key, search_fn in PROVIDERS:
-            diag = ProviderDiagnostic(
-                provider=name, query=query,
-                enabled=bool(os.getenv(env_key)),
-            )
-            if not diag.enabled:
-                diagnostics.append(diag)
-                continue
-            try:
-                provider_results = search_fn(
-                    query, max_results=max(2, max_per_provider)
-                )
-                diag.status = "success" if provider_results else "no_results"
-                diag.raw_result_count = len(provider_results)
-                for sr in provider_results:
-                    if sr.url and sr.url not in seen_urls:
-                        seen_urls.add(sr.url)
-                        all_results.append(sr)
-                        diag.new_result_count += 1
-            except Exception as exc:
-                diag.status = "failed"
-                diag.error = str(exc)
-            diagnostics.append(diag)
+            jobs.append((
+                name, query, search_fn,
+                max(2, max_per_provider), bool(os.getenv(env_key)),
+            ))
+        if use_duckduckgo:
+            jobs.append((
+                "duckduckgo", query, ddg_search,
+                max(3, max_per_provider // 2), True,
+            ))
 
-    # DuckDuckGo fallback — always available
-    if use_duckduckgo:
-        for query in queries[:4]:
-            diag = ProviderDiagnostic(
-                provider="duckduckgo", query=query, enabled=True,
-            )
+    completed: list[tuple[ProviderDiagnostic, list[SearchResult]]] = []
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [(pool.submit(_run_one, *job), job) for job in jobs]
+        for future, job in futures:
+            remaining = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    future.cancel()
+                    completed.append((ProviderDiagnostic(
+                        provider=job[0], query=job[1], enabled=job[4],
+                        status="timeout", error="search budget exhausted",
+                    ), []))
+                    continue
             try:
-                ddg_results = ddg_search(query, max_results=max(3, max_per_provider // 2))
-                diag.status = "success" if ddg_results else "no_results"
-                diag.raw_result_count = len(ddg_results)
-                for sr in ddg_results:
-                    if sr.url and sr.url not in seen_urls:
-                        seen_urls.add(sr.url)
-                        all_results.append(sr)
-                        diag.new_result_count += 1
+                completed.append(future.result(timeout=remaining))
             except Exception as exc:
-                diag.status = "failed"
-                diag.error = str(exc)
-            diagnostics.append(diag)
+                completed.append((ProviderDiagnostic(
+                    provider=job[0], query=job[1], enabled=job[4],
+                    status="timeout", error=str(exc) or "search budget exhausted",
+                ), []))
+
+    # Merge results, attributing each new URL to the provider that found it.
+    all_results: list[SearchResult] = []
+    seen_urls: set[str] = set()
+    diagnostics: list[ProviderDiagnostic] = []
+    for diag, results in completed:
+        for sr in results:
+            if sr.url and sr.url not in seen_urls:
+                seen_urls.add(sr.url)
+                all_results.append(sr)
+                diag.new_result_count += 1
+        diagnostics.append(diag)
 
     return deduplicate(all_results), diagnostics

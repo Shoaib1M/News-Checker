@@ -21,7 +21,15 @@ USER_AGENT = (
 SEARCH_URL = "https://duckduckgo.com/html/?q={query}"
 
 
-def _fetch(url: str, timeout: int = 10, retries: int = 2) -> str:
+def _fetch(url: str, timeout: int = 6, retries: int = 1) -> str:
+    """Fetch a URL with a tight timeout and at most one retry.
+
+    Timeouts and retries are deliberately small: DuckDuckGo routinely blocks
+    or stalls scripted requests, and this runs once per generated query. The
+    old 10s/3-attempt settings meant a single blocked claim could burn ~138
+    seconds here alone (4 queries x 3 attempts x 10s + backoff) — longer than
+    any sane request timeout upstream.
+    """
     last_error = None
     for attempt in range(retries + 1):
         try:
@@ -32,7 +40,7 @@ def _fetch(url: str, timeout: int = 10, retries: int = 2) -> str:
         except Exception as error:
             last_error = error
             if attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.0)
     raise last_error
 
 

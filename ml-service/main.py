@@ -76,6 +76,12 @@ _model = None
 _vectorizer = None
 _train_max_values = None
 
+# Hard ceiling on the evidence phase of a single /api/check request, shared
+# across all extracted claims. Kept well under the Node proxy's own timeout
+# (ML_SERVICE_TIMEOUT_MS) so a slow provider surfaces as partial evidence
+# with honest diagnostics rather than a dead request.
+EVIDENCE_BUDGET_SECONDS = float(os.getenv("EVIDENCE_BUDGET_SECONDS", "45"))
+
 
 """
 PURPOSE:
@@ -346,7 +352,12 @@ FLOW:
 4. Returns evidence, claim-level outcomes, and a conservative overall status.
 """
 @app.post("/api/check", response_model=CheckResponse)
-async def check_statement(request: CheckRequest):
+def check_statement(request: CheckRequest):
+    # Deliberately a sync `def`, not `async def`: this handler does blocking
+    # work throughout (urllib search/article fetches, NumPy and PyTorch
+    # inference). On an `async def` handler that work runs directly on the
+    # event loop and freezes the entire service for its duration — including
+    # /api/health. As a sync def, FastAPI runs it in its threadpool instead.
     if _model is None:
         # If the server is still booting up and loading the massive .pkl file
         raise HTTPException(status_code=503, detail="Model not loaded yet.")
@@ -387,10 +398,14 @@ async def check_statement(request: CheckRequest):
             "status": status, "nli_available": False, "evidence_count": 0,
         })]
     else:
+        # One budget shared across every claim, so a multi-claim statement
+        # can't multiply the worst case by the number of claims.
+        pipeline_deadline = time.monotonic() + EVIDENCE_BUDGET_SECONDS
         try:
             for claim in claims:
                 outcome = run_pipeline(
-                    claim, max_results=8, fetch_articles=True
+                    claim, max_results=8, fetch_articles=True,
+                    deadline=pipeline_deadline,
                 )
                 claim_summaries.append((claim, outcome.stance))
                 all_evidence.extend(outcome.evidence)
