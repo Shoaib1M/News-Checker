@@ -46,15 +46,22 @@ def get_nli_service() -> "NLIService":
 # across NLI models — guessing wrong silently inverts every verdict — so we
 # only resolve indexed labels for models explicitly verified here. Never add
 # an entry without confirming the model's actual id2label order first.
+# Order confirmed from the model's own config at load time:
+#   id2label={0: 'contradiction', 1: 'entailment', 2: 'neutral'}
+# An earlier version of this table had 1 and 2 swapped. It never produced a
+# wrong verdict, because these models ship real label names and the
+# substring path below wins — but a guessed order that silently inverts
+# entailment and neutral is exactly the failure this table exists to
+# prevent, so it is now the observed order, not an assumed one.
 _KNOWN_INDEXED_LABEL_ORDERS: dict[str, dict[str, str]] = {
     "cross-encoder/nli-deberta-v3-small": {
-        "label_0": "contradiction", "label_1": "neutral", "label_2": "entailment",
+        "label_0": "contradiction", "label_1": "entailment", "label_2": "neutral",
     },
     "cross-encoder/nli-deberta-v3-xsmall": {
-        "label_0": "contradiction", "label_1": "neutral", "label_2": "entailment",
+        "label_0": "contradiction", "label_1": "entailment", "label_2": "neutral",
     },
     "cross-encoder/nli-deberta-v3-base": {
-        "label_0": "contradiction", "label_1": "neutral", "label_2": "entailment",
+        "label_0": "contradiction", "label_1": "entailment", "label_2": "neutral",
     },
 }
 
