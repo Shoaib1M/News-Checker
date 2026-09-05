@@ -321,6 +321,7 @@ All served by `server/` (Express), all under `/api`:
 | `GNEWS_API_KEY` | No | — | Enables the GNews provider. Without it, only DuckDuckGo runs. |
 | `GUARDIAN_API_KEY` | No | — | Enables The Guardian provider. |
 | `NEWSAPI_KEY` | No | — | Enables the NewsAPI provider. |
+| `EVIDENCE_BUDGET_SECONDS` | No | `45` | Hard ceiling on the evidence phase of one `/api/check`, shared across every extracted claim. Bounds search + article extraction so a blocked provider degrades to partial evidence instead of hanging the request. Must stay comfortably below the server's `ML_SERVICE_TIMEOUT_MS`. |
 | `PORT` | No | `8000` | Set automatically by Render; the Dockerfile's `CMD` already handles `${PORT:-8000}`. |
 
 ### Server (`server/` — Vercel-specific vars matter only if you deploy it)

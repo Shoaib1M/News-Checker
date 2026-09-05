@@ -66,7 +66,14 @@ class _ArticleParser(HTMLParser):
             self._paragraph_parts.append(text)
 
 
-def _fetch_html(url: str, timeout: int = 10, retries: int = 2) -> str:
+def _fetch_html(url: str, timeout: int = 6, retries: int = 0) -> str:
+    """Fetch an article page. No retry by default.
+
+    This runs once per candidate document (up to 8 per claim). A news site
+    that blocks or stalls a scraper on the first attempt almost never
+    succeeds on a retry, so retrying just multiplies the wall-clock cost of
+    a failure across every candidate.
+    """
     last_error = None
     for attempt in range(retries + 1):
         try:
@@ -77,11 +84,11 @@ def _fetch_html(url: str, timeout: int = 10, retries: int = 2) -> str:
         except Exception as error:
             last_error = error
             if attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.0)
     raise last_error
 
 
-def extract_article(url: str, timeout: int = 10) -> tuple[str, str]:
+def extract_article(url: str, timeout: int = 6) -> tuple[str, str]:
     """Download a URL and return (title, full_text)."""
     html = _fetch_html(url, timeout=timeout)
     parser = _ArticleParser()

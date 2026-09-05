@@ -50,6 +50,32 @@ class ClaimDecompositionTests(unittest.TestCase):
         decomp = decompose_claim("Officials confirmed the policy was not implemented.")
         self.assertTrue(decomp.negation)
 
+    def test_leading_article_is_not_a_separate_entity(self):
+        """"The United States" and "United States" are one entity, not two.
+
+        Counting both meant matching the entity still scored as a partial
+        match, dragging relevance below the threshold for relevant articles.
+        """
+        entities = decompose_claim(
+            "The United States is banning google across all its countries."
+        ).primary_entities
+        self.assertNotIn("The United States", entities)
+        self.assertIn("United States", entities)
+
+    def test_capitalized_verb_is_not_an_entity(self):
+        """Users capitalize verbs mid-sentence; that isn't a named entity."""
+        entities = decompose_claim(
+            "The United States is Banning google across all its counties."
+        ).primary_entities
+        self.assertNotIn("Banning", entities)
+
+    def test_lowercase_organization_is_still_an_entity(self):
+        """'google' is the subject of the claim even when typed lowercase."""
+        entities = decompose_claim(
+            "The United States is Banning google across all its counties."
+        ).primary_entities
+        self.assertIn("Google", entities)
+
 
 class QueryGenerationTests(unittest.TestCase):
     def setUp(self):
