@@ -48,6 +48,14 @@ from knowledge_verifier import assess_claim
 from nli_service import get_nli_service
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment variable."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_env_file():
     """Load .env files to populate API keys into os.environ."""
     env_paths = [
@@ -118,8 +126,29 @@ async def lifespan(app: FastAPI):
     # Step 3: Load API keys for the web scraper
     load_env_file()
 
+    # Step 4: Warm the NLI model.
+    # Loading it lazily meant the first evidence-requiring request paid for
+    # the model download (hundreds of MB on a cold cache) inside the HTTP
+    # request — unbounded by the evidence budget, and silent, because
+    # nothing logs until the load finishes. Doing it here makes that cost
+    # visible at boot and keeps /api/health honest before traffic arrives.
+    if _env_flag("NLI_PRELOAD", default=True):
+        nli = get_nli_service()
+        if nli.status["enabled"]:
+            print(
+                f"Preloading NLI model ({nli.model_name}) — "
+                f"the first run downloads it, which can take a few minutes …"
+            )
+            state = nli.warm_up()
+            if state["status"] == "ready":
+                print(f"NLI model ready: {nli.model_name}")
+            else:
+                # Not fatal: the service still runs and abstains rather than
+                # guessing, and /api/health reports exactly why.
+                print(f"NLI unavailable ({state['status']}): {state['error']}")
+
     # Yield hands control back to FastAPI to start accepting requests
-    yield  
+    yield
 
     # Code below here runs when the server shuts down
     print("Shutting down ML service.")
