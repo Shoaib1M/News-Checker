@@ -11,90 +11,13 @@ from typing import Optional, List, Set
 from claim_decomposer import decompose_claim, ClaimDecomposition
 
 
-# ── Event vocabulary ─────────────────────────────────────────────────
-# The action a claim asserts is the whole point of the claim, and scoring it
-# was the filter's blind spot: for "the US is going to ban Google", an
-# article headlined "Google expands advertising tools in the United States"
-# scored 0.68 and survived strict filtering purely because both entities
-# appear in it, while the actually-relevant antitrust story scored lower.
-#
-# Each entry groups the surface forms of one event so a document written in
-# different words than the claim still matches ("resigned" / "steps down").
-# The vocabulary is curated rather than derived: an unrecognized verb makes
-# action scoring neutral, so a gap here weakens the filter but can never
-# cause it to reject a relevant article.
-_EVENT_VERBS: dict[str, tuple[str, ...]] = {
-    "ban": ("ban", "bans", "banned", "banning", "outlaw", "outlaws", "outlawed",
-            "prohibit", "prohibits", "prohibited", "prohibition", "forbid",
-            "forbids", "forbidden", "block", "blocks", "blocked", "restrict",
-            "restricts", "restricted", "crackdown"),
-    "resign": ("resign", "resigns", "resigned", "resignation", "quit", "quits",
-               "step down", "steps down", "stepped down", "stepping down",
-               "ousted", "removed from office"),
-    "arrest": ("arrest", "arrests", "arrested", "detained", "custody",
-               "charged", "indicted", "indictment"),
-    "acquire": ("acquire", "acquires", "acquired", "acquisition", "buy",
-                "buys", "bought", "purchase", "purchases", "purchased",
-                "takeover", "merger", "merges", "merged"),
-    "launch": ("launch", "launches", "launched", "unveil", "unveils",
-               "unveiled", "release", "releases", "released", "introduce",
-               "introduces", "introduced", "rollout", "rolls out"),
-    "die": ("die", "dies", "died", "death", "dead", "killed", "fatal",
-            "passed away"),
-    "invade": ("invade", "invades", "invaded", "invasion", "attack",
-               "attacks", "attacked", "strike", "strikes", "war"),
-    "increase": ("increase", "increases", "increased", "rise", "rises",
-                 "rose", "rising", "surge", "surges", "surged", "grew",
-                 "growth", "higher", "up", "improve", "improves", "improved",
-                 "improvement", "boost", "boosts", "boosted", "gain", "gains"),
-    "decrease": ("decrease", "decreases", "decreased", "fall", "falls",
-                 "fell", "falling", "drop", "drops", "dropped", "decline",
-                 "declines", "declined", "lower", "down", "cut", "cuts",
-                 "worsen", "worsens", "worsened", "harm", "harms", "harmed",
-                 "casts doubt", "no effect"),
-    "approve": ("approve", "approves", "approved", "approval", "pass",
-                "passes", "passed", "enact", "enacts", "enacted", "signed"),
-    "reject": ("reject", "rejects", "rejected", "deny", "denies", "denied",
-               "refuse", "refuses", "refused", "veto", "vetoed", "struck down"),
-    "rename": ("rename", "renames", "renamed", "renaming", "name change",
-               "rebrand", "rebrands", "rebranded", "new name"),
-    "fine": ("fine", "fines", "fined", "penalty", "penalties", "sued",
-             "lawsuit", "settlement", "antitrust"),
-    "close": ("close", "closes", "closed", "shut", "shuts", "shutdown",
-              "shut down", "collapse", "collapses", "collapsed", "bankrupt",
-              "bankruptcy", "dissolve", "dissolved"),
-    "elect": ("elect", "elects", "elected", "election", "wins", "won",
-              "victory", "sworn in", "inaugurated"),
-    "legalize": ("legalize", "legalizes", "legalized", "legalise",
-                 "legalised", "decriminalize", "decriminalized"),
-    "announce": ("announce", "announces", "announced", "announcement",
-                 "confirm", "confirms", "confirmed", "declare", "declares",
-                 "declared", "plans", "proposal", "proposes", "proposed"),
-}
-
-# Reverse index: surface form -> canonical event.
-_SURFACE_TO_EVENT: dict[str, str] = {
-    form: event
-    for event, forms in _EVENT_VERBS.items()
-    for form in forms
-}
-
-# Evidence *against* a claim usually states the opposite action, not the
-# claim's own. For "a four-day workweek improves productivity", the study that
-# refutes it is headlined "output fell under the shorter schedule" — no word
-# from the "increase" family anywhere in it. Matching only the claim's own
-# action therefore filtered out exactly the contradicting sources the system
-# exists to find, leaving a one-sided "supported" verdict on a genuinely
-# contested claim. Each pair is symmetric and both directions are registered.
-_ACTION_ANTONYMS: dict[str, str] = {}
-for _a, _b in (
-    ("increase", "decrease"),
-    ("approve", "reject"),
-    ("ban", "legalize"),
-    ("launch", "close"),
-):
-    _ACTION_ANTONYMS[_a] = _b
-    _ACTION_ANTONYMS[_b] = _a
+# The event vocabulary lives in event_vocabulary.py because query generation
+# needs the same notion of "what action does this claim assert" — the two
+# stages have to agree, or the retriever searches for one thing and the filter
+# scores for another.
+from event_vocabulary import ANTONYMS as _ACTION_ANTONYMS  # noqa: E402
+from event_vocabulary import EVENT_VERBS as _EVENT_VERBS  # noqa: E402
+from event_vocabulary import events_in as _events_in  # noqa: E402
 
 
 @dataclass
@@ -377,12 +300,7 @@ class RelevanceFilter:
         in which case action scoring stays neutral and this dimension has no
         effect on whether the document is kept.
         """
-        lowered = f" {claim.lower()} "
-        events: Set[str] = set()
-        for surface, event in _SURFACE_TO_EVENT.items():
-            if re.search(rf"(?<![a-z]){re.escape(surface)}(?![a-z])", lowered):
-                events.add(event)
-        return events
+        return _events_in(claim)
 
     def _score_action_match(self, claim_events: Set[str], doc_combined: str) -> float:
         """1.0 if the document discusses the claim's event — or its opposite.

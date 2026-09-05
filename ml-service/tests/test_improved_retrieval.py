@@ -85,12 +85,18 @@ class QueryGenerationTests(unittest.TestCase):
         claim = "The name of united states is being changed to india by 2050."
         queries = self.generator.generate_queries(claim)
         self.assertGreater(len(queries), 3)
-        purposes = {q["purpose"] for q in queries}
-        self.assertIn("exact_claim", purposes)
-        self.assertIn("proposition", purposes)
+        purposes = [q["purpose"] for q in queries]
+        # The claim as written leads: it is the best general-purpose query.
+        self.assertEqual(purposes[0], "proposition")
         # Two-entity claims should get an explicit entity-relationship query,
         # not just a bag of separate keyword queries.
         self.assertIn("entity_relationship", purposes)
+        # This used to assert that the quoted full claim was generated. It
+        # still is, but ranked last and outside the returned slice: an
+        # exact-phrase search for a user's own paraphrase matches nothing,
+        # and it was consuming one of the four dispatched slots on every
+        # single claim. See tests/test_query_generation.py.
+        self.assertNotIn("exact_claim", purposes[:4])
 
     def test_exact_claim_query_preserves_wording(self):
         claim = "Water freezes at 0 degrees C at sea level."
