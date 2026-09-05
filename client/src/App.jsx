@@ -16,6 +16,7 @@ We need a central "brain" for the frontend to manage the state that is shared ac
 */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { Info } from "lucide-react";
 import "./App.css";
 
 // Import all the modular UI pieces (components)
@@ -385,6 +386,23 @@ function App() {
           </button>
         </div>
       </form>
+
+      {/* What to expect note — evidence retrieval depends on live web search,
+          which is imperfect (especially for very fresh headlines with no
+          news-API keys configured). This is here so a reviewer reads a
+          borderline/irrelevant source as a known retrieval limitation, not
+          as the system being broken. */}
+      <aside className="reviewer-note" aria-label="What to expect from results">
+        <Info size={15} className="reviewer-note-icon" />
+        <p>
+          <strong>What to expect:</strong> evidence comes from live web search, which
+          can be incomplete for very recent or niche stories. Each source below is
+          labeled <strong>Verified</strong> or <strong>Unverified</strong> — only
+          Verified sources were actually checked against the claim by the NLI model.
+          If a listed source looks off-topic, that's the retrieval step surfacing a
+          weak candidate, not the system claiming it as proof.
+        </p>
+      </aside>
 
       <section className="info-panel" aria-label="How it works">
         <h3 className="info-panel-title">How it works</h3>

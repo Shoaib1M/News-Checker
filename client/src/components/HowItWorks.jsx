@@ -282,7 +282,10 @@ function EvidencePipelineDiagram() {
     "NLI",
     "Verdict",
   ];
-  const width = 500;
+  // The last node's right edge (470 + 42 = 512) must stay inside the
+  // viewBox, or SVG clips it — width must exceed the rightmost node's
+  // extent, not just its start x.
+  const width = 540;
   const height = 180;
   const x = [50, 120, 210, 300, 390, 470];
 

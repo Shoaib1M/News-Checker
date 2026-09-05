@@ -83,9 +83,14 @@ export default function EvidenceCard({ evidence, index }) {
             <span className="evidence-tier">{tierLabel}</span>
           </div>
         </div>
-        <span className={`stance-badge ${stance} ${strengthLabel.toLowerCase()}`}>
-          {stance}
-        </span>
+        <div className="evidence-badges">
+          <span className={`verified-badge ${nli_available ? "verified" : "unverified"}`}>
+            {nli_available ? "Verified" : "Unverified"}
+          </span>
+          <span className={`stance-badge ${stance} ${strengthLabel.toLowerCase()}`}>
+            {stance}
+          </span>
+        </div>
       </div>
 
       <a
