@@ -177,6 +177,8 @@ router.post("/", optionalAuth, async (req, res) => {
             contradictingCount: result.evidence.contradicting_count,
             neutralCount: result.evidence.neutral_count,
             independentGroups: result.evidence.independent_groups,
+            independentSupporting: result.evidence.independent_supporting,
+            independentContradicting: result.evidence.independent_contradicting,
           },
         });
       } catch (dbError) {

@@ -154,6 +154,10 @@ const checkSchema = new mongoose.Schema(
       contradictingCount: Number,
       neutralCount: Number,
       independentGroups: Number,
+      // Publishers backing each direction. These, not the article count, are
+      // what a verdict actually rests on.
+      independentSupporting: Number,
+      independentContradicting: Number,
     },
   },
   // Automatically adds createdAt and updatedAt dates

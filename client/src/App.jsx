@@ -310,6 +310,8 @@ function App() {
           contradicting_count: full.evidenceSummary.contradictingCount,
           neutral_count: full.evidenceSummary.neutralCount,
           independent_groups: full.evidenceSummary.independentGroups,
+          independent_supporting: full.evidenceSummary.independentSupporting,
+          independent_contradicting: full.evidenceSummary.independentContradicting,
         },
       });
     } catch {
@@ -555,10 +557,21 @@ function App() {
 
             return (
               <div className="evidence-section" id="evidence-section">
-                {evidence.length > 0 && (
+                {evidence.length > 0 && (() => {
+                  // Independent publishers, not article count. Four reprints
+                  // of one wire story are one confirmation, and this is the
+                  // only number on screen that says so.
+                  const publishers = Math.max(
+                    result.evidence?.independent_supporting || 0,
+                    result.evidence?.independent_contradicting || 0,
+                  );
+                  return (
                   <>
                     <p className="section-label">
                       Evidence used — {evidence.length} source{evidence.length === 1 ? "" : "s"}
+                      {publishers > 0
+                        ? ` · ${publishers} independent publisher${publishers === 1 ? "" : "s"}`
+                        : ""}
                       {candidateCount ? ` · ${candidateCount} candidates searched` : ""}
                     </p>
                     <div className="evidence-grid">
@@ -567,7 +580,8 @@ function App() {
                       ))}
                     </div>
                   </>
-                )}
+                  );
+                })()}
 
                 {context.length > 0 && (
                   <>

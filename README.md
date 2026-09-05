@@ -164,7 +164,9 @@ These are the non-negotiable rules the codebase is built around — they were th
 - **Search failure ≠ no evidence ≠ false.** `retrieval.status` distinguishes `SEARCH_FAILED` (all providers errored), `NO_RESULTS` (providers ran, found nothing), `NO_RELEVANT_RESULTS` (results found, none relevant), and `SEARCH_SUCCESS`/`SEARCH_PARTIAL`. These are never conflated.
 - **The legacy MLP never determines the verdict.** `binary_truth_mlp.py` is a from-scratch neural net trained on the LIAR political-statements dataset. It's shown in the API response (`ml.score`) for transparency, flagged `auxiliary_only: true`, but the verdict computation (`evidence_verdict_score`, `merge_claim_summaries`) never reads it.
 - **NLI label order is not standardized across models — never guess it.** Different NLI models emit their entailment/contradiction/neutral labels in different, undocumented orders. `nli_service.py` only trusts a model's real named labels (order-independent) or an explicit, manually-verified per-model lookup table — an unrecognized model emitting raw `LABEL_0`/`LABEL_1`/`LABEL_2` output makes the service report `failed` and abstain, rather than risk silently inverting every verdict.
-- **Repeated coverage from one outlet isn't independent confirmation.** `evidence_aggregator.count_independent_groups` counts distinct **publisher** domains among classified evidence, so five re-posts of the same story don't look like five confirmations. Aggregator links are resolved to the real publisher first (`claim_verifier.resolve_publisher_host`) — counting by URL host would have filed ten different newsrooms reached through Google News as a single origin, and tiered every one of them as "unclassified".
+- **The verdict must be monotonic in the evidence.** Direction scores are weighted means over the sources that *take* that direction, not over everything classified. Averaging in neutrals made the system non-monotonic: one Reuters article entailing a claim at 0.93 gave `supported`, and adding three on-topic articles that said nothing either way dragged the mean to 0.26 and turned the same evidence into `insufficient_evidence`. More evidence, none of it disagreeing, made it less certain.
+- **"Mixed" means genuinely contested, not merely two-sided.** A direction wins outright when its weighted mass is at least `DOMINANCE_RATIO` (2×) the other side's. On raw counts, one 0.40 contradiction from an unclassified blog was filed as equal to five strong reports from reputable outlets.
+- **Repeated coverage from one outlet isn't independent confirmation.** `evidence_aggregator` counts distinct **publisher** domains per direction (`independent_supporting` / `independent_contradicting`), and **confidence is scaled by those, not by article count** — four copies of one wire story under one masthead are one confirmation, and used to earn "high" confidence. Aggregator links are resolved to the real publisher first (`claim_verifier.resolve_publisher_host`) — counting by URL host would have filed ten different newsrooms reached through Google News as a single origin, and tiered every one of them as "unclassified".
 - **Confidence is categorical, not fake-precision.** The UI shows `low` / `medium` / `high` / `very high`, not a `73.42%` number implying a calibration that doesn't exist. Where a percentage bar *is* shown (evidence-balance visualization), it reads "—" / "Not available" instead of a misleading number when there's no classified evidence to measure.
 
 ## Tech stack
@@ -237,10 +239,12 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
 
   // Aggregated evidence AFTER NLI classification — this is the real "evidence used" count.
   "evidence": {
-    "supporting_count": 3,
+    "supporting_count": 3,           // classified sources that entail the claim
     "contradicting_count": 0,
-    "neutral_count": 0,
-    "independent_groups": 3          // distinct publisher domains among classified evidence
+    "neutral_count": 0,              // checked, addressed neither side — shown as "Related coverage"
+    "independent_groups": 3,         // distinct publishers across ALL classified evidence (search breadth)
+    "independent_supporting": 3,     // distinct publishers backing each direction. THESE are what a
+    "independent_contradicting": 0   // verdict rests on, and what scales confidence — not the counts above
   },
 
   // ── Legacy/flattened fields, kept for backward compatibility ──

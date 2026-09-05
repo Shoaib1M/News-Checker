@@ -5,12 +5,14 @@ a weighted stance summary.  Source tier weights ensure that one CDC dataset
 outweighs five blog reposts, and syndication detection prevents
 wire-service copies from inflating evidence counts.
 
-A verdict is produced only when:
-- At least one source passed NLI classification, AND
-- At least two independent source groups exist, OR
-- A single primary/fact-check source entails/contradicts with high confidence
+A directional verdict requires at least one source that NLI classified as
+entailing or contradicting the claim, with a weighted mean score above
+MIN_DIRECTIONAL_STRENGTH. Otherwise the status is "insufficient_evidence".
 
-Otherwise the status is "insufficient_evidence".
+Independence is not a gate on the verdict — one Reuters article that clearly
+entails a claim is real evidence — but it *is* what drives confidence. The
+distinct-publisher counts returned here are what stop four copies of one wire
+story from reading as four confirmations.
 """
 
 from __future__ import annotations
@@ -34,13 +36,43 @@ class ClassifiedEvidence:
     publisher: str = ""
 
 
+def _publisher_of(result: ClassifiedEvidence) -> str:
+    """Identify who published this, preferring the resolved publisher host."""
+    host = result.publisher or urlparse(result.url).netloc.lower().split(":")[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+# A direction only wins outright when its weighted mass is at least this many
+# times the opposing side's. Below that the evidence is genuinely contested
+# and the honest answer is "mixed".
+DOMINANCE_RATIO = 2.0
+
+# Minimum weighted mean score for a direction to count at all.
+MIN_DIRECTIONAL_STRENGTH = 0.35
+
+
 def compute_stance(results: list[ClassifiedEvidence]) -> dict:
     """Return a weighted stance summary from classified evidence.
 
     Returns a dict with:
         support, contradiction, net, status, verdict,
         nli_available, evidence_count, evidence_used_count,
-        supporting_count, contradicting_count, neutral_count
+        supporting_count, contradicting_count, neutral_count,
+        independent_supporting, independent_contradicting
+
+    HOW THE DIRECTION IS SCORED — and why it changed:
+    ``support`` and ``contradiction`` used to be weighted means over *every*
+    classified source, neutrals included. That made the verdict
+    non-monotonic in a way nobody would expect: one Reuters article entailing
+    the claim at 0.93 gave ``supported``, and adding three on-topic articles
+    that said nothing either way dragged the mean to 0.26 and turned the same
+    evidence into ``insufficient_evidence``. More evidence, none of it
+    disagreeing, made the system less certain.
+
+    Each direction is now scored over the sources that actually take it.
+    Neutral coverage still counts — as the evidence pool the aggregator
+    canvassed, and in the confidence calculation — but it no longer dilutes
+    a conclusion it does not contradict.
     """
     nli_results = [r for r in results if r.nli_available]
     if not nli_results:
@@ -56,53 +88,53 @@ def compute_stance(results: list[ClassifiedEvidence]) -> dict:
             "supporting_count": 0,
             "contradicting_count": 0,
             "neutral_count": 0,
+            "independent_supporting": 0,
+            "independent_contradicting": 0,
         }
 
-    # Weighted aggregation
-    weighted_support = 0.0
-    weighted_contradiction = 0.0
-    total_weight = 0.0
-    supporting_count = 0
-    contradicting_count = 0
-    neutral_count = 0
+    supporting = [r for r in nli_results if r.stance == "supports"]
+    contradicting = [r for r in nli_results if r.stance == "contradicts"]
+    neutral = [r for r in nli_results if r.stance not in {"supports", "contradicts"}]
 
-    for r in nli_results:
-        w = max(r.source_weight, 0.1)
-        weighted_support += r.support_score * w
-        weighted_contradiction += r.contradiction_score * w
-        total_weight += w
+    def weighted(side: list[ClassifiedEvidence], attribute: str) -> tuple[float, float]:
+        """Return (weighted mean score, total weighted mass) for one side."""
+        if not side:
+            return 0.0, 0.0
+        total_weight = sum(max(r.source_weight, 0.1) for r in side)
+        mass = sum(getattr(r, attribute) * max(r.source_weight, 0.1) for r in side)
+        return (mass / total_weight if total_weight else 0.0), mass
 
-        if r.stance == "supports":
-            supporting_count += 1
-        elif r.stance == "contradicts":
-            contradicting_count += 1
-        else:
-            neutral_count += 1
-
-    if total_weight > 0:
-        avg_support = weighted_support / total_weight
-        avg_contradiction = weighted_contradiction / total_weight
-    else:
-        avg_support = avg_contradiction = 0.0
-
+    avg_support, support_mass = weighted(supporting, "support_score")
+    avg_contradiction, contradiction_mass = weighted(contradicting, "contradiction_score")
     net = avg_support - avg_contradiction
 
-    # Status determination
-    if len(nli_results) < 1:
-        status = "insufficient_evidence"
-        verdict = "insufficient evidence"
-    elif supporting_count > 0 and contradicting_count > 0:
-        status = "mixed"
-        verdict = "claims have mixed evidence"
-    elif avg_support > 0.35 and supporting_count > 0:
-        status = "supported"
-        verdict = "evidence supports the claim"
-    elif avg_contradiction > 0.35 and contradicting_count > 0:
-        status = "contradicted"
-        verdict = "evidence contradicts the claim"
+    # Distinct publishers per direction. Four copies of one wire story from
+    # one newsroom are one confirmation, not four — the syndication guard the
+    # module has always claimed and did not previously apply.
+    independent_supporting = len({_publisher_of(r) for r in supporting})
+    independent_contradicting = len({_publisher_of(r) for r in contradicting})
+
+    support_ok = supporting and avg_support > MIN_DIRECTIONAL_STRENGTH
+    contradiction_ok = contradicting and avg_contradiction > MIN_DIRECTIONAL_STRENGTH
+
+    if support_ok and contradiction_ok:
+        # Both directions are represented. Whether that is genuinely contested
+        # or one weak dissent against a solid consensus depends on the
+        # weighted mass, not on the raw counts: five strong reports from
+        # reputable outlets used to be filed as "mixed" against one 0.40
+        # contradiction from an unclassified blog.
+        if support_mass >= contradiction_mass * DOMINANCE_RATIO:
+            status, verdict = "supported", "evidence supports the claim"
+        elif contradiction_mass >= support_mass * DOMINANCE_RATIO:
+            status, verdict = "contradicted", "evidence contradicts the claim"
+        else:
+            status, verdict = "mixed", "claims have mixed evidence"
+    elif support_ok:
+        status, verdict = "supported", "evidence supports the claim"
+    elif contradiction_ok:
+        status, verdict = "contradicted", "evidence contradicts the claim"
     else:
-        status = "insufficient_evidence"
-        verdict = "insufficient evidence"
+        status, verdict = "insufficient_evidence", "insufficient evidence"
 
     return {
         "support": round(avg_support, 4),
@@ -113,9 +145,11 @@ def compute_stance(results: list[ClassifiedEvidence]) -> dict:
         "nli_available": True,
         "evidence_count": len(nli_results),
         "evidence_used_count": len(nli_results),
-        "supporting_count": supporting_count,
-        "contradicting_count": contradicting_count,
-        "neutral_count": neutral_count,
+        "supporting_count": len(supporting),
+        "contradicting_count": len(contradicting),
+        "neutral_count": len(neutral),
+        "independent_supporting": independent_supporting,
+        "independent_contradicting": independent_contradicting,
     }
 
 
