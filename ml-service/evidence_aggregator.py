@@ -16,6 +16,8 @@ Otherwise the status is "insufficient_evidence".
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -114,3 +116,27 @@ def compute_stance(results: list[ClassifiedEvidence]) -> dict:
         "contradicting_count": contradicting_count,
         "neutral_count": neutral_count,
     }
+
+
+def count_independent_groups(results: Iterable) -> int:
+    """Count distinct independent source origins among NLI-classified evidence.
+
+    Several articles from the same publisher domain — or syndicated copies —
+    count as one independent group, not several.  Near-duplicate titles are
+    already deduplicated upstream in ``providers/registry.py``; this counts
+    the remaining distinct publisher domains so the same outlet's coverage
+    can't be presented as multiple independent confirmations.
+
+    Accepts anything with ``.url`` and ``.nli_available`` attributes
+    (``ClassifiedEvidence`` or ``evidence_pipeline.EvidenceResult``).
+    """
+    domains: set[str] = set()
+    for r in results:
+        if not getattr(r, "nli_available", False):
+            continue
+        host = urlparse(r.url).netloc.lower().split(":")[0]
+        if host.startswith("www."):
+            host = host[4:]
+        if host:
+            domains.add(host)
+    return len(domains)

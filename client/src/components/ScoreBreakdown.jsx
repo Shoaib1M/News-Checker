@@ -14,23 +14,29 @@ Transparency is crucial in AI. A single number out of 100 isn't enough; the user
 to know *why* the AI gave that score.
 */
 
-export default function ScoreBreakdown({ mlScore, evidenceScore, stanceNet }) {
+export default function ScoreBreakdown({ mlScore, evidenceScore, stanceNet, hasClassifiedEvidence }) {
+  const evidencePct = Math.round(evidenceScore * 100);
+  const directionPct = Math.round(((stanceNet + 1) / 2) * 100);
+
   const items = [
     {
       label: "Model signal",
       value: Math.round(mlScore * 100),
+      display: `${Math.round(mlScore * 100)}%`,
       tooltip: "A legacy learned signal; it is never used alone as proof",
     },
     {
       label: "External evidence",
-      value: Math.round(evidenceScore * 100),
-      tooltip: "Strength and coverage of retrieved evidence",
+      // Without any NLI-classified evidence, a percentage here would be fake
+      // precision — there is nothing to measure yet, not a low score.
+      value: hasClassifiedEvidence ? evidencePct : 0,
+      display: hasClassifiedEvidence ? `${evidencePct}%` : "—",
+      tooltip: "Strength and coverage of NLI-classified evidence",
     },
     {
       label: "Evidence direction",
-      // Stance is usually a number between -1 (Contradicts) and 1 (Supports).
-      // We normalize it to a 0-100 scale here so it visually matches the other bars.
-      value: Math.round(((stanceNet + 1) / 2) * 100),
+      value: hasClassifiedEvidence ? directionPct : 0,
+      display: hasClassifiedEvidence ? `${directionPct}%` : "Not available",
       tooltip: "Whether NLI-checked evidence supports or contradicts the claim",
     },
   ];
@@ -47,7 +53,7 @@ export default function ScoreBreakdown({ mlScore, evidenceScore, stanceNet }) {
               style={{ width: `${item.value}%` }}
             />
           </div>
-          <span className="breakdown-value">{item.value}%</span>
+          <span className="breakdown-value">{item.display}</span>
         </div>
       ))}
     </div>

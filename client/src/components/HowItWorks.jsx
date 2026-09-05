@@ -241,7 +241,7 @@ export default function HowItWorks() {
           {[
             {
               label: "ML / Data",
-              items: ["Python", "NumPy", "Pandas", "Custom TF-IDF"],
+              items: ["Python", "NumPy", "Pandas", "TF-IDF (auxiliary ML feature only)"],
             },
             {
               label: "Backend",

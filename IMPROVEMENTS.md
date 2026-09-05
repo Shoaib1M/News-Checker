@@ -235,3 +235,85 @@ And we need to change the backend as well such that the model gives more accurat
 
 **Status**: Implementation Complete
 **Last Updated**: 2025-09-02
+
+## 2026-09-05 Audit and Fixes
+
+A follow-up audit re-checked the whole repository against a long external
+review. Two claims in that review were already false by the time it landed
+— worth recording so they aren't "fixed" again: `ml-service/Dockerfile`
+already sets `NLI_ENABLED=true`, and `nli_service.py` is already the single
+authoritative NLI state machine (`disabled`/`loading`/`ready`/`failed`) used
+by both `/api/health` and the evidence pipeline. The real, verified gaps
+were narrower:
+
+1. **Dead code removed**: `evidence_scraper.py` (the legacy TF-IDF /
+   canonical-word / opposite-group / DuckDuckGo-HTML scorer) was fully
+   superseded by `evidence_pipeline.py` + `providers/` + `relevance_filter.py`
+   but was still kept alive by two tests importing it. Deleted, and those
+   tests (`test_evidence_assessment.py`, `test_improved_retrieval.py`)
+   rewritten as real assertions against the live modules. Also removed
+   `tokenizer.py` (zero imports anywhere) and a stale duplicate
+   `saved_models/binary_truth_mlp.pkl` (older copy of the model main.py
+   actually loads).
+2. **Relevance filter bug found via testing**: for single-entity claims
+   (e.g. "US government considers banning Google"), `entity_match_score`
+   alone (1.0 for any doc merely mentioning "Google") was nearly enough to
+   pass the strict relevance threshold, because predicate/coherence scoring
+   double-counted the entity's own name as if it were predicate evidence.
+   A "Google expands advertising tools" article was incorrectly scored as
+   relevant. Fixed in `relevance_filter.py` by excluding a claim's own
+   entity tokens from predicate/coherence overlap — but only for
+   single-entity claims; multi-entity relational claims (e.g. "United
+   States" + "India") keep the old behavior, where matching both entities
+   together is itself meaningful signal.
+3. **Negation/attribution regex gap**: `claim_decomposer.py` recognized
+   "denied"/"deny" but not "denies", so "NASA denies the asteroid will pass
+   close to Earth" wasn't flagged as negated/attributed. Fixed.
+4. **Source independence was a hardcoded `0`**: `main.py` returned
+   `independent_groups=0` with a TODO. Implemented real clustering
+   (`evidence_aggregator.count_independent_groups`) — classified evidence
+   is grouped by publisher domain so repeat coverage from one outlet isn't
+   counted as multiple independent confirmations.
+5. **Frontend never read the new response schema**: `App.jsx` and
+   `ScoreBreakdown.jsx` reconstructed everything from legacy flat fields
+   instead of `verification`/`retrieval`/`nli`/`evidence`. Concretely, the
+   evidence-count header fell back to raw `top_evidence.length` (unverified
+   search candidates) whenever the verified count was zero — i.e. it could
+   label unverified candidates as "evidence used". Fixed: the UI now reads
+   `nli.classified_count` directly (never falls back to candidate count),
+   distinguishes "Sources found — N (0 verified)" from "Verified evidence —
+   N sources", surfaces NLI-unavailable and SEARCH_FAILED/NO_RELEVANT_RESULTS
+   states explicitly, and shows "—"/"Not available" instead of fake-precision
+   percentages when there's no classified evidence to measure.
+6. **History playback lost the new schema**: `Check.js`/`check.js` only
+   persisted the legacy flattened fields, so loading a saved check from
+   `/api/history/:id` didn't match a live check's rendering. Extended the
+   Mongo schema and save/load mapping to carry `verification`, `ml`,
+   `retrieval`, `nli`, and `evidenceSummary`.
+7. **Hardening**: `check.js`'s proxy call to the ml-service had no timeout
+   (a hung ml-service would hang Express indefinitely) — added an
+   `AbortController` timeout. `middleware/auth.js` silently fell back to a
+   hardcoded `JWT_SECRET` default — now throws at startup if
+   `NODE_ENV=production` and `JWT_SECRET` is unset, rather than silently
+   signing tokens with a guessable secret.
+8. **Tests**: added `tests/test_provider_registry.py` (dedup, and that a
+   provider exception surfaces as a `failed` diagnostic rather than a
+   silent empty/`zero_results` result) and `tests/test_api.py` (FastAPI
+   `TestClient` coverage of `/api/health` and `/api/check`, including that
+   a deterministic claim never touches the network pipeline and that
+   `SEARCH_FAILED` is never conflated with a real "no evidence" outcome).
+   Full suite: 39 passing (`python -m pytest ml-service/tests/`).
+
+### Known limitation from this session
+
+This sandbox's network proxy does not allow outbound requests to
+`duckduckgo.com`, the news-provider APIs, or `download.pytorch.org`, so
+live news retrieval and real NLI-model inference could not be exercised
+end-to-end here. What *was* verified live: `/api/health` reporting real
+NLI/provider state, the three deterministic regression claims (water
+freezing, Great Wall visibility, triangle sides) via `knowledge_verifier.py`,
+and that a real provider failure is correctly surfaced as `SEARCH_FAILED`
+with the underlying error recorded (not silently collapsed into
+`NO_RESULTS` or a false verdict). Frontend states (verified evidence,
+unverified candidates, deterministic result) were confirmed visually via
+Playwright with the real UI code and mocked API responses.

@@ -1,149 +1,147 @@
-"""
-Comprehensive tests for the improved evidence retrieval pipeline.
+"""Assertion-based tests for claim decomposition, query generation, and
+relevance filtering — the pipeline stages that run before NLI.
 
-Tests the following claims:
-- "Water freezes at 0°C at sea level." → should return strong TRUE evidence
-- "A triangle has four sides." → should return strong FALSE evidence
-- "The Great Wall of China is visible from the Moon with the naked eye." → strong FALSE
-- "The name of United States is being changed to India by 2050." → should NOT show random unrelated articles
+These replace the old print-only demo script of the same name, which never
+asserted anything and imported the now-deleted evidence_scraper module.
 """
 
 import sys
 from pathlib import Path
+import unittest
 
-# Add parent directory to path so we can import modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
+SERVICE_DIR = Path(__file__).resolve().parents[1]
+if str(SERVICE_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVICE_DIR))
 
-from evidence_scraper import collect_evidence
 from claim_decomposer import decompose_claim
 from query_generator import QueryGenerator
 from relevance_filter import RelevanceFilter
 
 
-def test_claim_decomposition():
-    """Test that claims are properly decomposed into structured components."""
-    print("\n" + "="*80)
-    print("TEST 1: Claim Decomposition")
-    print("="*80)
-    
-    test_cases = [
-        "Water freezes at 0°C at sea level.",
-        "A triangle has four sides.",
-        "The name of united states is being changed to india by 2050.",
-        "The Great Wall of China is visible from the Moon with the naked eye.",
-    ]
-    
-    for claim in test_cases:
-        decomp = decompose_claim(claim)
-        print(f"\nClaim: {claim}")
-        print(f"  Type: {decomp.claim_type}")
-        print(f"  Entities: {decomp.primary_entities}")
-        print(f"  Predicates: {decomp.core_predicates}")
-        print(f"  Temporal: {decomp.temporal_constraints}")
-        print(f"  Numbers: {decomp.numerical_values}")
-        print(f"  Modality: {decomp.modality}")
+class ClaimDecompositionTests(unittest.TestCase):
+    def test_future_temporal_claim(self):
+        decomp = decompose_claim("The name of united states is being changed to india by 2050.")
+        self.assertEqual(decomp.temporal_constraints, "future")
+        self.assertIn("United States", decomp.primary_entities)
+        self.assertIn("India", decomp.primary_entities)
+
+    def test_negation_and_attribution_on_denial(self):
+        """'NASA denies X' must be flagged as a negated, attributed statement —
+        this is what lets the system tell it apart from 'NASA says X'."""
+        decomp = decompose_claim("NASA denies the asteroid will pass close to Earth.")
+        self.assertTrue(decomp.negation)
+        self.assertEqual(decomp.attribution, "denies")
+
+    def test_affirmative_attribution_has_no_negation(self):
+        decomp = decompose_claim("NASA says the asteroid will pass close to Earth.")
+        self.assertFalse(decomp.negation)
+        self.assertEqual(decomp.attribution, "says")
+
+    def test_speculative_modality(self):
+        decomp = decompose_claim("NASA says the asteroid might hit Earth.")
+        self.assertEqual(decomp.modality, "speculative")
+
+    def test_factual_claim_has_no_negation(self):
+        decomp = decompose_claim("Water freezes at 0 degrees C at sea level.")
+        self.assertFalse(decomp.negation)
+        self.assertEqual(decomp.modality, "factual")
+
+    def test_explicit_negation_word(self):
+        decomp = decompose_claim("Officials confirmed the policy was not implemented.")
+        self.assertTrue(decomp.negation)
 
 
-def test_query_generation():
-    """Test that multiple targeted queries are generated."""
-    print("\n" + "="*80)
-    print("TEST 2: Query Generation")
-    print("="*80)
-    
-    generator = QueryGenerator()
-    test_claims = [
-        "Water freezes at 0°C at sea level.",
-        "The name of united states is being changed to india by 2050.",
-    ]
-    
-    for claim in test_claims:
-        print(f"\nClaim: {claim}")
-        queries = generator.generate_queries(claim)
-        print(f"Generated {len(queries)} queries:")
-        for q in queries:
-            print(f"  - [{q['purpose']}] {q['query']}")
+class QueryGenerationTests(unittest.TestCase):
+    def setUp(self):
+        self.generator = QueryGenerator()
+
+    def test_generates_multiple_typed_queries(self):
+        claim = "The name of united states is being changed to india by 2050."
+        queries = self.generator.generate_queries(claim)
+        self.assertGreater(len(queries), 3)
+        purposes = {q["purpose"] for q in queries}
+        self.assertIn("exact_claim", purposes)
+        self.assertIn("proposition", purposes)
+        # Two-entity claims should get an explicit entity-relationship query,
+        # not just a bag of separate keyword queries.
+        self.assertIn("entity_relationship", purposes)
+
+    def test_exact_claim_query_preserves_wording(self):
+        claim = "Water freezes at 0 degrees C at sea level."
+        queries = self.generator.generate_queries(claim)
+        exact = next(q for q in queries if q["purpose"] == "exact_claim")
+        self.assertIn("Water freezes", exact["query"])
 
 
-def test_relevance_filtering():
-    """Test that irrelevant articles are filtered out."""
-    print("\n" + "="*80)
-    print("TEST 3: Relevance Filtering")
-    print("="*80)
-    
-    claim = "The name of united states is being changed to india by 2050."
-    
-    test_documents = [
-        {
-            'title': 'Kennedy Center reportedly changed rules before vote to add Trump\'s name',
-            'snippet': 'The Kennedy Center made changes to voting procedures...',
-            'text': 'The Kennedy Center reportedly changed its rules...',
-        },
-        {
-            'title': 'A job that changed me: Being a theatre usher cracked open my heart to beauty',
-            'snippet': 'Working as a theatre usher changed my perspective on life...',
-            'text': 'I worked as a theatre usher and it changed everything...',
-        },
-        {
-            'title': 'Airline industry chiefs say 2050 net zero goal now unlikely',
-            'snippet': 'Industry leaders gathered to discuss 2050 climate targets...',
-            'text': 'The airline industry is concerned about meeting 2050 net zero goals...',
-        },
-        {
-            'title': 'Geopolitical tensions as India and US relations shift',
-            'snippet': 'The relationship between India and the United States continues to evolve...',
-            'text': 'Relations between India and the United States have been changing significantly...',
-        },
-    ]
-    
-    print(f"\nClaim: {claim}")
-    print(f"\nTest documents: {len(test_documents)}")
-    
-    filter_instance = RelevanceFilter()
-    included, excluded = filter_instance.filter_documents(claim, test_documents, strict=True)
-    
-    print(f"\nINCLUDED ({len(included)}):")
-    for doc in included:
-        score = doc['_relevance_score']
-        print(f"  [INCLUDED] {doc['title']}")
-        print(f"    Relevance: {score.overall_relevance:.2f}")
-        print(f"    Reasons: {', '.join(score.reasons_included)}")
-    
-    print(f"\nEXCLUDED ({len(excluded)}):")
-    for doc in excluded:
-        score = doc['_relevance_score']
-        print(f"  [EXCLUDED] {doc['title']}")
-        print(f"    Relevance: {score.overall_relevance:.2f}")
-        print(f"    Reasons: {', '.join(score.reasons_excluded)}")
+class RelevanceFilterTests(unittest.TestCase):
+    def setUp(self):
+        self.filter = RelevanceFilter()
+        self.claim = "The name of united states is being changed to india by 2050."
+        self.documents = [
+            {
+                "title": "Kennedy Center reportedly changed rules before vote to add Trump's name",
+                "snippet": "The Kennedy Center made changes to voting procedures...",
+                "text": "The Kennedy Center reportedly changed its rules...",
+            },
+            {
+                "title": "A job that changed me: Being a theatre usher cracked open my heart to beauty",
+                "snippet": "Working as a theatre usher changed my perspective on life...",
+                "text": "I worked as a theatre usher and it changed everything...",
+            },
+            {
+                "title": "Airline industry chiefs say 2050 net zero goal now unlikely",
+                "snippet": "Industry leaders gathered to discuss 2050 climate targets...",
+                "text": "The airline industry is concerned about meeting 2050 net zero goals...",
+            },
+            {
+                "title": "Geopolitical tensions as India and US relations shift",
+                "snippet": "The relationship between India and the United States continues to evolve...",
+                "text": "Relations between India and the United States have been changing significantly...",
+            },
+        ]
 
+    def test_keyword_collision_articles_are_excluded(self):
+        """Sharing only 'changed' or '2050' with the claim must not qualify —
+        this is the exact false-positive class the relevance filter exists to stop."""
+        included, excluded = self.filter.filter_documents(self.claim, self.documents, strict=True)
+        included_titles = {doc["title"] for doc in included}
+        self.assertNotIn(
+            "Kennedy Center reportedly changed rules before vote to add Trump's name",
+            included_titles,
+        )
+        self.assertNotIn(
+            "A job that changed me: Being a theatre usher cracked open my heart to beauty",
+            included_titles,
+        )
+        self.assertNotIn(
+            "Airline industry chiefs say 2050 net zero goal now unlikely",
+            included_titles,
+        )
 
-def test_evidence_collection():
-    """Test the full evidence collection pipeline."""
-    print("\n" + "="*80)
-    print("TEST 4: Full Evidence Collection Pipeline")
-    print("="*80)
-    print("\nNote: This test requires network access and API keys.")
-    print("Skipping network tests in non-interactive environment.")
-    print("In production, test with:")
-    print("  - 'Water freezes at 0 degrees C at sea level.' -> expect TRUE with physics sources")
-    print("  - 'A triangle has four sides.' -> expect FALSE with geometry sources")
-    print("  - 'The name of United States is being changed to India by 2050.' -> expect no irrelevant articles")
+    def test_genuinely_relevant_article_is_included(self):
+        included, _ = self.filter.filter_documents(self.claim, self.documents, strict=True)
+        included_titles = {doc["title"] for doc in included}
+        self.assertIn("Geopolitical tensions as India and US relations shift", included_titles)
 
-
-def run_all_tests():
-    """Run all tests."""
-    print("\n" + "="*80)
-    print("NEWSCHECKER IMPROVED RETRIEVAL PIPELINE - COMPREHENSIVE TESTS")
-    print("="*80)
-    
-    test_claim_decomposition()
-    test_query_generation()
-    test_relevance_filtering()
-    test_evidence_collection()
-    
-    print("\n" + "="*80)
-    print("ALL TESTS COMPLETED")
-    print("="*80 + "\n")
+    def test_ban_claim_is_not_matched_by_unrelated_domains(self):
+        """Regression for 'US government considers banning Google': a bond-market
+        article and a Google-advertising article must not pass as relevant."""
+        claim = "The US government is considering banning Google."
+        documents = [
+            {
+                "title": "US bond markets rattled by inflation data",
+                "snippet": "Treasury yields rose sharply this week...",
+                "text": "Bond markets reacted to new inflation figures released by the Fed...",
+            },
+            {
+                "title": "Google expands advertising tools for small businesses",
+                "snippet": "New ad formats roll out globally...",
+                "text": "Google announced new advertising products aimed at small businesses...",
+            },
+        ]
+        included, _ = self.filter.filter_documents(claim, documents, strict=True)
+        self.assertEqual(included, [])
 
 
 if __name__ == "__main__":
-    run_all_tests()
+    unittest.main()

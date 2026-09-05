@@ -42,6 +42,7 @@ from binary_truth_mlp import (
     make_prediction_features,
 )
 from claim_verifier import extract_claims
+from evidence_aggregator import count_independent_groups
 from evidence_pipeline import run_pipeline, EvidenceResult as PipelineEvidenceResult
 from knowledge_verifier import assess_claim
 from nli_service import get_nli_service
@@ -510,7 +511,7 @@ async def check_statement(request: CheckRequest):
             supporting_count=evidence_counts["supporting"],
             contradicting_count=evidence_counts["contradicting"],
             neutral_count=evidence_counts["neutral"],
-            independent_groups=0,  # TODO: source independence grouping
+            independent_groups=count_independent_groups(all_evidence),
         ),
 
         # Legacy fields for backward compatibility

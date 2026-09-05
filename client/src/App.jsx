@@ -262,6 +262,12 @@ function App() {
       setStatement(full.statement);
       setResult({
         statement: full.statement,
+        claim_type: full.claimType,
+        verdict: full.verdict,
+        confidence: full.confidence,
+        reasoning: full.reasoning,
+        external_evidence_available: full.externalEvidenceAvailable,
+        external_evidence_checked: full.externalEvidenceChecked,
         ml_score: full.mlScore,
         ml_verdict: full.mlVerdict,
         evidence_score: full.evidenceScore,
@@ -272,6 +278,33 @@ function App() {
         claim_assessments: full.claimAssessments,
         top_evidence: full.topEvidence,
         processing_time_seconds: full.processingTime,
+        // New structured schema — same shape the live /api/check response
+        // uses, so history playback renders identically to a live check.
+        verification: full.verification,
+        ml: full.ml && {
+          available: full.ml.available,
+          auxiliary_only: full.ml.auxiliaryOnly,
+          score: full.ml.score,
+          verdict: full.ml.verdict,
+          threshold: full.ml.threshold,
+        },
+        retrieval: full.retrieval && {
+          status: full.retrieval.status,
+          candidate_count: full.retrieval.candidateCount,
+          relevant_count: full.retrieval.relevantCount,
+          diagnostics: full.retrieval.diagnostics,
+        },
+        nli: full.nli && {
+          available: full.nli.available,
+          status: full.nli.status,
+          classified_count: full.nli.classifiedCount,
+        },
+        evidence: full.evidenceSummary && {
+          supporting_count: full.evidenceSummary.supportingCount,
+          contradicting_count: full.evidenceSummary.contradictingCount,
+          neutral_count: full.evidenceSummary.neutralCount,
+          independent_groups: full.evidenceSummary.independentGroups,
+        },
       });
     } catch {
       setStatement(item.statement);
@@ -416,7 +449,6 @@ function App() {
           <div className="score-card">
             <ScoreGauge
               score={result.combined_score}
-              verdict={result.combined_verdict}
               assessmentStatus={result.assessment_status}
             />
             <div className="score-details">
@@ -439,42 +471,74 @@ function App() {
                     ? " · no qualifying external evidence"
                     : " · deterministic check"}
               </p>
-              {result.external_evidence_checked && (
-                <>
-                  <p className="assessment-note">
-                    Web verification: {result.evidence_stance?.retrieval_status || "NO_RESULTS"}
-                  </p>
-                  {result.evidence_stance?.retrieval_status === "SEARCH_FAILED" && (
+              {result.external_evidence_checked && (() => {
+                const retrievalStatus = result.retrieval?.status || "NO_RESULTS";
+                return (
+                  <>
                     <p className="assessment-note">
-                      Web verification could not be completed because all configured search providers failed or are unavailable.
+                      Web verification: {retrievalStatus}
                     </p>
-                  )}
-                </>
-              )}
+                    {retrievalStatus === "SEARCH_FAILED" && (
+                      <p className="assessment-note">
+                        Web verification unavailable — search providers could not be reached.
+                      </p>
+                    )}
+                    {retrievalStatus === "NO_RELEVANT_RESULTS" && (
+                      <p className="assessment-note">
+                        Sources were found, but none were relevant enough to this specific claim to use as evidence.
+                      </p>
+                    )}
+                    {result.nli && !result.nli.available && (
+                      <p className="assessment-note">
+                        Evidence classification is currently unavailable (NLI model: {result.nli.status}).
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
               <ScoreBreakdown
                 mlScore={result.ml_score}
                 evidenceScore={result.evidence_score}
                 stanceNet={result.evidence_stance?.net || 0}
+                hasClassifiedEvidence={(result.nli?.classified_count || 0) > 0}
               />
             </div>
           </div>
 
           {/* Evidence Articles */}
-          {result.top_evidence && result.top_evidence.length > 0 && (
-            <div className="evidence-section" id="evidence-section">
-              <p className="section-label">
-                Evidence used — {result.evidence_stance?.evidence_used_count || result.top_evidence.length} sources
-                {result.evidence_stance?.candidate_count
-                  ? ` · ${result.evidence_stance.candidate_count} candidates searched`
-                  : ""}
-              </p>
-              <div className="evidence-grid">
-                {result.top_evidence.map((ev, i) => (
-                  <EvidenceCard key={ev.url || i} evidence={ev} index={i} />
-                ))}
+          {result.top_evidence && result.top_evidence.length > 0 && (() => {
+            // classified_count reflects sources that actually passed NLI — never
+            // fall back to the raw candidate count, which would relabel
+            // unverified search results as "evidence used".
+            const classifiedCount = result.nli?.classified_count ?? 0;
+            const candidateCount = result.retrieval?.candidate_count;
+            return (
+              <div className="evidence-section" id="evidence-section">
+                {classifiedCount > 0 ? (
+                  <p className="section-label">
+                    Verified evidence — {classifiedCount} source{classifiedCount === 1 ? "" : "s"}
+                    {candidateCount ? ` · ${candidateCount} candidates searched` : ""}
+                  </p>
+                ) : (
+                  <>
+                    <p className="section-label">
+                      Sources found — {result.top_evidence.length} (0 verified)
+                    </p>
+                    <p className="assessment-note evidence-empty">
+                      {result.nli?.status === "ready"
+                        ? "None of the sources found could be confidently classified as supporting or contradicting this claim. The sources below are candidates, not verified evidence."
+                        : "Evidence classification is currently unavailable. The sources below are candidates, not verified evidence."}
+                    </p>
+                  </>
+                )}
+                <div className="evidence-grid">
+                  {result.top_evidence.map((ev, i) => (
+                    <EvidenceCard key={ev.url || i} evidence={ev} index={i} />
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
           {result.external_evidence_checked &&
             (!result.top_evidence || result.top_evidence.length === 0) &&
             !result.external_evidence_available && (

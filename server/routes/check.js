@@ -24,6 +24,12 @@ const router = Router();
 // In development, this is usually http://localhost:8000
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
+// The evidence pipeline can involve several sequential network calls
+// (multiple providers x multiple queries, then article fetches), so this
+// needs real headroom — but it must still have a ceiling so a hung
+// ml-service can't hang every Express request indefinitely.
+const ML_SERVICE_TIMEOUT_MS = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 60_000;
+
 /*
 PURPOSE:
 Process a fact-check request.
@@ -50,12 +56,29 @@ router.post("/", optionalAuth, async (req, res) => {
     }
 
     // Step 2: Forward the request to the Python FastAPI service
-    // We send a POST request to FastAPI, passing along the statement
-    const mlResponse = await fetch(`${FASTAPI_URL}/api/check`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ statement: statement.trim() }),
-    });
+    // We send a POST request to FastAPI, passing along the statement.
+    // AbortController bounds how long a hung ml-service can block this
+    // request — without it, a stuck upstream call would hang forever.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ML_SERVICE_TIMEOUT_MS);
+
+    let mlResponse;
+    try {
+      mlResponse = await fetch(`${FASTAPI_URL}/api/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ statement: statement.trim() }),
+        signal: controller.signal,
+      });
+    } catch (fetchError) {
+      if (fetchError.name === "AbortError") {
+        console.error("FastAPI request timed out after", ML_SERVICE_TIMEOUT_MS, "ms");
+        return res.status(504).json({ error: "ML service timed out." });
+      }
+      throw fetchError;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     // Step 3: Handle potential errors from the Python service
     if (!mlResponse.ok) {
@@ -95,6 +118,38 @@ router.post("/", optionalAuth, async (req, res) => {
           })),
           topEvidence: result.top_evidence,
           processingTime: result.processing_time_seconds,
+
+          claimType: result.claim_type,
+          verdict: result.verdict,
+          confidence: result.confidence,
+          reasoning: result.reasoning,
+          externalEvidenceAvailable: result.external_evidence_available,
+          externalEvidenceChecked: result.external_evidence_checked,
+          verification: result.verification,
+          ml: result.ml && {
+            available: result.ml.available,
+            auxiliaryOnly: result.ml.auxiliary_only,
+            score: result.ml.score,
+            verdict: result.ml.verdict,
+            threshold: result.ml.threshold,
+          },
+          retrieval: result.retrieval && {
+            status: result.retrieval.status,
+            candidateCount: result.retrieval.candidate_count,
+            relevantCount: result.retrieval.relevant_count,
+            diagnostics: result.retrieval.diagnostics,
+          },
+          nli: result.nli && {
+            available: result.nli.available,
+            status: result.nli.status,
+            classifiedCount: result.nli.classified_count,
+          },
+          evidenceSummary: result.evidence && {
+            supportingCount: result.evidence.supporting_count,
+            contradictingCount: result.evidence.contradicting_count,
+            neutralCount: result.evidence.neutral_count,
+            independentGroups: result.evidence.independent_groups,
+          },
         });
       } catch (dbError) {
         // If saving fails, we log it, but we DON'T crash the request.

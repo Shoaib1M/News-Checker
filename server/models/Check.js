@@ -103,12 +103,52 @@ const checkSchema = new mongoose.Schema(
       contradiction: Number,
       evidenceCount: Number,
     }],
-    
+
     // An array of the top evidence articles found (uses the sub-schema defined above)
     topEvidence: [evidenceItemSchema],
-    
+
     // How long it took the ML service to process this request (in seconds)
     processingTime: Number,
+
+    // ── Structured response schema (mirrors ml-service's CheckResponse) ──
+    // Stored alongside the legacy flattened fields above so that loading a
+    // saved check from history renders identically to a live check — the
+    // frontend reads verification/ml/retrieval/nli/evidenceSummary directly
+    // rather than reconstructing them from flattened numbers.
+    claimType: String,
+    verdict: String,
+    confidence: String,
+    reasoning: String,
+    externalEvidenceAvailable: Boolean,
+    externalEvidenceChecked: Boolean,
+    verification: {
+      status: String,
+      reasoning: String,
+    },
+    ml: {
+      available: Boolean,
+      auxiliaryOnly: Boolean,
+      score: Number,
+      verdict: String,
+      threshold: Number,
+    },
+    retrieval: {
+      status: String,
+      candidateCount: Number,
+      relevantCount: Number,
+      diagnostics: [mongoose.Schema.Types.Mixed],
+    },
+    nli: {
+      available: Boolean,
+      status: String,
+      classifiedCount: Number,
+    },
+    evidenceSummary: {
+      supportingCount: Number,
+      contradictingCount: Number,
+      neutralCount: Number,
+      independentGroups: Number,
+    },
   },
   // Automatically adds createdAt and updatedAt dates
   { timestamps: true }
