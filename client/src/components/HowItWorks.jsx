@@ -253,7 +253,12 @@ export default function HowItWorks() {
             },
             {
               label: "APIs",
-              items: ["DuckDuckGo", "GNews", "NewsAPI", "The Guardian"],
+              items: [
+                "Google News RSS (no key)",
+                "Wikipedia (no key)",
+                "GNews", "NewsAPI", "The Guardian",
+                "DuckDuckGo (fallback)",
+              ],
             },
           ].map((group) => (
             <div className="hiw-tech-group" key={group.label}>
@@ -276,18 +281,24 @@ export default function HowItWorks() {
 function EvidencePipelineDiagram() {
   const steps = [
     "Claim",
+    "Triage",
     "Search",
     "Relevance",
     "Passage",
     "NLI",
     "Verdict",
   ];
-  // The last node's right edge (470 + 42 = 512) must stay inside the
-  // viewBox, or SVG clips it — width must exceed the rightmost node's
-  // extent, not just its start x.
-  const width = 540;
+  // Evenly spaced from a single pitch so adding a stage can't reintroduce the
+  // clipping bug: the last node's right edge must stay inside the viewBox,
+  // and that is now derived rather than hand-maintained.
+  // Sized so the longest label ("Relevance", ~44px at 9px type) fits inside
+  // its box rather than bleeding past the rounded corners.
+  const nodeSize = 50;
+  const pitch = 84;
+  const startX = 24;
+  const x = steps.map((_, i) => startX + i * pitch);
+  const width = startX + (steps.length - 1) * pitch + nodeSize + startX;
   const height = 180;
-  const x = [50, 120, 210, 300, 390, 470];
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="hiw-nn-svg">
@@ -296,15 +307,15 @@ function EvidencePipelineDiagram() {
           <rect
             x={x[i]}
             y={60}
-            width={42}
-            height={42}
+            width={nodeSize}
+            height={nodeSize}
             rx={10}
             className={
               i % 2 === 0 ? "hiw-nn-node hiw-nn-input" : "hiw-nn-node hiw-nn-hidden"
             }
           />
           <text
-            x={x[i] + 21}
+            x={x[i] + nodeSize / 2}
             y={82}
             textAnchor="middle"
             className="hiw-nn-label"
@@ -317,7 +328,7 @@ function EvidencePipelineDiagram() {
       {x.slice(0, -1).map((val, i) => (
         <line
           key={`arrow-${i}`}
-          x1={val + 42}
+          x1={val + nodeSize}
           y1={81}
           x2={x[i + 1]}
           y2={81}

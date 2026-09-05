@@ -42,12 +42,6 @@ export default function ModelComparison() {
   const mlp6 = models.mlp_6class;
   const bt = models.binary_mlp;
 
-  // Helper function to format the difference between two numbers (e.g., "+4.2")
-  const delta = (a, b) => {
-    const diff = ((a - b) * 100).toFixed(1);
-    return diff > 0 ? `+${diff}` : diff;
-  };
-
   const metricsRows = [
     {
       label: "Accuracy",

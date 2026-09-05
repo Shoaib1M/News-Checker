@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from article_extractor import extract_article, extract_passages
-from claim_verifier import classify_source
+from claim_verifier import classify_source, resolve_publisher_host
 from evidence_aggregator import ClassifiedEvidence, compute_stance
 from nli_service import get_nli_service
 from providers import SearchResult
@@ -47,6 +47,10 @@ class EvidenceResult:
     source_tier: str = "unclassified"
     source_weight: float = 0.0
     nli_available: bool = False
+    # Host of whoever actually published the article. Differs from the URL's
+    # host for aggregator links (Google News), and it is this value — not the
+    # link — that decides source tier and counts independent groups.
+    publisher: str = ""
 
 
 class PipelineOutcome(NamedTuple):
@@ -182,7 +186,9 @@ def run_pipeline(
         title = doc.get("title", "")
         snippet = doc.get("snippet", "")
         full_text = doc.get("text", "")
-        source_profile = classify_source(url)
+        publisher_name = doc.get("source", "")
+        source_profile = classify_source(url, publisher_name)
+        publisher_host = resolve_publisher_host(url, publisher_name)
 
         fetched_title, fetched_text = fetched_articles.get(url, ("", ""))
         if fetched_text and len(fetched_text.split()) > len((full_text or "").split()):
@@ -239,12 +245,14 @@ def run_pipeline(
             source_tier=source_profile.tier,
             source_weight=source_profile.weight,
             nli_available=nli_available,
+            publisher=publisher_host,
         ))
 
     # ── Stage 6: Evidence aggregation ────────────────────────────────
     classified = [
         ClassifiedEvidence(
             url=e.url,
+            publisher=e.publisher,
             source=e.source,
             source_tier=e.source_tier,
             source_weight=e.source_weight,

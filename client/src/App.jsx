@@ -281,7 +281,12 @@ function App() {
         processing_time_seconds: full.processingTime,
         // New structured schema — same shape the live /api/check response
         // uses, so history playback renders identically to a live check.
-        verification: full.verification,
+        verification: full.verification && {
+          status: full.verification.status,
+          reasoning: full.verification.reasoning,
+          claim_kind: full.verification.claimKind,
+          salience: full.verification.salience,
+        },
         ml: full.ml && {
           available: full.ml.available,
           auxiliary_only: full.ml.auxiliaryOnly,
@@ -395,12 +400,15 @@ function App() {
       <aside className="reviewer-note" aria-label="What to expect from results">
         <Info size={15} className="reviewer-note-icon" />
         <p>
-          <strong>What to expect:</strong> evidence comes from live web search, which
-          can be incomplete for very recent or niche stories. Each source below is
-          labeled <strong>Verified</strong> or <strong>Unverified</strong> — only
-          Verified sources were actually checked against the claim by the NLI model.
-          If a listed source looks off-topic, that's the retrieval step surfacing a
-          weak candidate, not the system claiming it as proof.
+          <strong>What to expect:</strong> this checks claims against live sources, so
+          it answers with what the evidence shows rather than a guess. It distinguishes{" "}
+          <strong>supported</strong>, <strong>contradicted</strong>,{" "}
+          <strong>no credible source reports this</strong> (a real finding for a claim
+          that would have been widely covered), <strong>not yet verifiable</strong> (the
+          claim is about a future event), and <strong>could not verify</strong> (our
+          search or model failed — a limitation on our side, never a statement about the
+          claim). Articles that cover the topic without addressing the claim are listed
+          separately under <em>Related coverage</em> and are never counted as evidence.
         </p>
       </aside>
 
@@ -411,7 +419,7 @@ function App() {
             <strong>1.</strong> Enter a claim or headline
           </div>
           <div>
-            <strong>2.</strong> We interpret the actual proposition
+            <strong>2.</strong> We work out what kind of claim it is
           </div>
           <div>
             <strong>3.</strong> We search for relevant evidence
@@ -423,7 +431,7 @@ function App() {
             <strong>5.</strong> We check supporting and contradicting sources
           </div>
           <div>
-            <strong>6.</strong> We give a verdict with the evidence used
+            <strong>6.</strong> We give a verdict, or say why we can't
           </div>
         </div>
         <div className="info-panel-list">
@@ -491,19 +499,21 @@ function App() {
               </p>
               {result.external_evidence_checked && (() => {
                 const retrievalStatus = result.retrieval?.status || "NO_RESULTS";
+                const candidates = result.retrieval?.candidate_count ?? 0;
+                const relevant = result.retrieval?.relevant_count ?? 0;
                 return (
                   <>
+                    {/* One line of retrieval provenance, in words rather
+                        than an enum name. The reasoning line above already
+                        explains the verdict; this says how wide the search
+                        that produced it actually was. */}
                     <p className="assessment-note">
-                      Web verification: {retrievalStatus}
+                      Retrieval: {candidates} candidate{candidates === 1 ? "" : "s"} ·{" "}
+                      {relevant} on-topic · {result.nli?.classified_count ?? 0} checked against the claim
                     </p>
                     {retrievalStatus === "SEARCH_FAILED" && (
                       <p className="assessment-note">
-                        Web verification unavailable — search providers could not be reached.
-                      </p>
-                    )}
-                    {retrievalStatus === "NO_RELEVANT_RESULTS" && (
-                      <p className="assessment-note">
-                        Sources were found, but none were relevant enough to this specific claim to use as evidence.
+                        Search providers could not be reached, so nothing here reflects on the claim itself.
                       </p>
                     )}
                     {result.nli && !result.nli.available && (
@@ -519,41 +529,64 @@ function App() {
                 evidenceScore={result.evidence_score}
                 stanceNet={result.evidence_stance?.net || 0}
                 hasClassifiedEvidence={(result.nli?.classified_count || 0) > 0}
+                hasDirectionalEvidence={
+                  (result.evidence?.supporting_count || 0) +
+                    (result.evidence?.contradicting_count || 0) >
+                  0
+                }
               />
             </div>
           </div>
 
-          {/* Evidence Articles */}
+          {/* Evidence Articles.
+
+              Split deliberately. Every source the NLI model classified as
+              neither supporting nor contradicting the claim used to sit in
+              the same grid under a heading counting it as evidence, which is
+              how an on-topic-but-unrelated article came across as the system
+              claiming it as proof. Sources that take a position on the claim
+              are evidence; the rest is context, and is labelled as context. */}
           {result.top_evidence && result.top_evidence.length > 0 && (() => {
-            // classified_count reflects sources that actually passed NLI — never
-            // fall back to the raw candidate count, which would relabel
-            // unverified search results as "evidence used".
-            const classifiedCount = result.nli?.classified_count ?? 0;
+            const addresses = (ev) =>
+              ev.nli_available && (ev.stance === "supports" || ev.stance === "contradicts");
+            const evidence = result.top_evidence.filter(addresses);
+            const context = result.top_evidence.filter((ev) => !addresses(ev));
             const candidateCount = result.retrieval?.candidate_count;
+
             return (
               <div className="evidence-section" id="evidence-section">
-                {classifiedCount > 0 ? (
-                  <p className="section-label">
-                    Verified evidence — {classifiedCount} source{classifiedCount === 1 ? "" : "s"}
-                    {candidateCount ? ` · ${candidateCount} candidates searched` : ""}
-                  </p>
-                ) : (
+                {evidence.length > 0 && (
                   <>
                     <p className="section-label">
-                      Sources found — {result.top_evidence.length} (0 verified)
+                      Evidence used — {evidence.length} source{evidence.length === 1 ? "" : "s"}
+                      {candidateCount ? ` · ${candidateCount} candidates searched` : ""}
+                    </p>
+                    <div className="evidence-grid">
+                      {evidence.map((ev, i) => (
+                        <EvidenceCard key={ev.url || i} evidence={ev} index={i} />
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {context.length > 0 && (
+                  <>
+                    <p className="section-label">
+                      {evidence.length > 0 ? "Related coverage" : "Related coverage — no evidence used"}
+                      {" — "}{context.length} source{context.length === 1 ? "" : "s"}
                     </p>
                     <p className="assessment-note evidence-empty">
                       {result.nli?.status === "ready"
-                        ? "None of the sources found could be confidently classified as supporting or contradicting this claim. The sources below are candidates, not verified evidence."
-                        : "Evidence classification is currently unavailable. The sources below are candidates, not verified evidence."}
+                        ? "These articles cover the same subject but state neither that the claim is true nor that it is false. They are shown so you can see what was searched — they are not being counted as evidence."
+                        : "Evidence classification is currently unavailable, so these are unchecked candidates rather than evidence."}
                     </p>
+                    <div className="evidence-grid">
+                      {context.map((ev, i) => (
+                        <EvidenceCard key={ev.url || i} evidence={ev} index={i} />
+                      ))}
+                    </div>
                   </>
                 )}
-                <div className="evidence-grid">
-                  {result.top_evidence.map((ev, i) => (
-                    <EvidenceCard key={ev.url || i} evidence={ev} index={i} />
-                  ))}
-                </div>
               </div>
             );
           })()}

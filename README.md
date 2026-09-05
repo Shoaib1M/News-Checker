@@ -38,13 +38,45 @@ This is a full-stack, three-service application: a React frontend, a Node/Expres
 
 Type a claim like *"The US Federal Reserve raised interest rates by 0.25% in its latest meeting"* and NewsChecker:
 
-1. **Understands the claim** — extracts entities, the core predicate/action, negation, attribution ("officials said" vs "officials denied"), modality (factual vs speculative), and temporal constraints.
-2. **Applies a deterministic check first**, for claims with an unambiguous, well-known answer (basic arithmetic, textbook science/geometry facts, a small set of verified historical facts) — no web search needed, no ambiguity.
-3. Otherwise, **generates multiple targeted search queries** (exact headline, proposition, entity-pair, contradiction/verification queries) and **retrieves candidates** from several providers (GNews, The Guardian, NewsAPI, DuckDuckGo — whichever are configured).
-4. **Filters for relevance** using entity/predicate/coherence scoring — a document that merely shares a keyword with the claim (a number, an entity name) does **not** qualify as relevant.
-5. **Runs NLI** (natural language inference) on the surviving candidates' passages against the claim, classifying each as entailment (supports), contradiction, or neutral.
-6. **Aggregates evidence** — weighting by source tier (primary/fact-check/reporting/unclassified) and counting independent publisher domains, so five articles from one outlet don't outweigh one from another.
-7. **Returns a verdict** with a categorical confidence (not a fake-precision percentage) and the actual evidence used — explicitly distinguishing sources that were *found* from sources that were *verified*.
+1. **Triages the claim** (`claim_triage.py`) — decides what kind of question it even poses, before any network work. A question, a fragment, keyboard mash, or a value judgment is reported as such and never searched. A claim about a *future* event is marked prospective: nothing can make it true or false today. It also judges **salience** — would a true version of this claim necessarily have been reported? — and whether the claim is negated. Both feed the absence-of-coverage rule below.
+2. **Understands the claim** — extracts entities, the core predicate/action, negation, attribution ("officials said" vs "officials denied"), modality (factual vs speculative), and temporal constraints.
+3. **Applies a deterministic check**, for claims with an unambiguous, well-known answer (basic arithmetic, textbook science/geometry facts, a small set of verified historical facts) — no web search needed, no ambiguity.
+4. Otherwise, **generates multiple targeted search queries** (exact headline, proposition, entity-pair, contradiction/verification queries) and **retrieves candidates** from several providers. Google News RSS and Wikipedia need no API key and are on by default; GNews, The Guardian and NewsAPI join in when their keys are configured.
+5. **Filters for relevance** using entity, **action**, predicate, coherence and specificity scoring. Sharing a keyword with the claim — a number, an entity name — is not relevance; neither is being about the right subjects while never mentioning the event the claim asserts.
+6. **Runs NLI** (natural language inference) on the surviving candidates' passages against the claim, classifying each as entailment (supports), contradiction, or neutral.
+7. **Aggregates evidence** — weighting by source tier (primary/fact-check/reporting/reference/unclassified) and counting independent *publisher* domains, so five articles from one outlet don't outweigh one from another.
+8. **Returns a verdict** with a categorical confidence (not a fake-precision percentage) and the actual evidence used — explicitly distinguishing sources that were *found* from sources that were *verified*, and sources that address the claim from sources that merely cover the topic.
+
+### The verdicts it can return
+
+The point of the triage and aggregation stages is that these are genuinely different answers. Earlier versions collapsed most of them into "insufficient evidence", which made a correct abstention indistinguishable from a bug:
+
+| `verification.status` | Shown as | What it means |
+|---|---|---|
+| `supported` | evidence supports the claim | Classified sources entail the claim. |
+| `contradicted` | evidence contradicts the claim | Classified sources contradict it. |
+| `mixed` | claims have mixed evidence | Credible sources point both ways. |
+| `reported_plan` | reported as planned — not yet done | A prospective claim that sources report as announced. Confirms the *announcement*, not the event. |
+| `unsupported_no_coverage` | no credible source reports this | A real negative finding — see below. |
+| `not_verifiable_yet` | not yet verifiable — describes a future event | Prospective, and not reported as announced either. |
+| `not_a_claim` | no verifiable claim found | A question, fragment, link, or unparseable text. Nothing was searched. |
+| `not_objectively_verifiable` | subjective — not objectively verifiable | A value judgment. |
+| `insufficient_evidence` | insufficient evidence | **A limitation on our side** — the search failed, or NLI was unavailable. Never a statement about the claim. |
+
+### Absence of coverage as evidence
+
+The hardest case is a fabricated but highly newsworthy claim — *"Elon Musk bought the Eiffel Tower"*. Nothing contradicts it explicitly, because no outlet writes articles denying things that never happened. Reporting "insufficient evidence" there is technically true and practically useless.
+
+So `evidence_aggregator.assess_coverage` returns **"no credible source reports this"** — but only when *every* one of these holds, because the cost of getting it wrong is asserting that nobody reported something when we simply failed to look:
+
+1. The search actually ran (`SEARCH_SUCCESS`, `SEARCH_PARTIAL`, or `NO_RELEVANT_RESULTS` — never `SEARCH_FAILED`).
+2. It returned a real pool of candidates (≥ `MIN_CANDIDATES_FOR_ABSENCE`, currently 4).
+3. Nothing in that pool supported *or* contradicted the claim — a contradiction is stronger evidence and wins on its own.
+4. The claim is **high-salience**: it asserts a major event, at absolute scope or in headline form, so a true version could not have gone unreported. An ordinary claim going unreported proves nothing.
+5. The claim is **not negated**. No outlet reporting that the US banned Google is exactly what *"the US did not ban Google"* predicts — treating silence as evidence against a negative claim inverts the inference.
+6. The **NLI model was available**. "No source supports this" is a claim about what sources say, and we only know that if something read them.
+
+Confidence then scales with how much of the press was actually canvassed, not with how many sources were classified — the finding *is* that none were.
 
 The one thing this system is deliberately built **not** to do: treat "a search result exists" as "evidence." A candidate only becomes evidence after it survives relevance filtering *and* gets classified by NLI. See [Design principles](#design-principles).
 
@@ -76,14 +108,14 @@ flowchart LR
         History["/api/history (MongoDB)"]
     end
     subgraph ML["ml-service/ — Python + FastAPI"]
-        Pipeline["Claim decomposition →<br/>retrieval → relevance →<br/>NLI → aggregation"]
+        Pipeline["Triage → claim decomposition →<br/>retrieval → relevance →<br/>NLI → aggregation"]
         NLIModel["NLI cross-encoder<br/>(transformers, CPU)"]
         Legacy["Legacy Binary MLP<br/>(auxiliary signal only)"]
     end
     subgraph External["External services"]
         Mongo[(MongoDB Atlas)]
         Google[Google OAuth]
-        News["News providers:<br/>GNews · Guardian · NewsAPI · DuckDuckGo"]
+        News["Search providers:<br/>Google News RSS · Wikipedia (keyless)<br/>GNews · Guardian · NewsAPI (keyed)<br/>DuckDuckGo (fallback)"]
     end
 
     UI -->|"POST /api/check"| Proxy
@@ -102,16 +134,20 @@ The evidence pipeline itself, inside `ml-service/`:
 
 ```mermaid
 flowchart TD
-    A[Claim text] --> B["claim_decomposer.py<br/>entities · predicate · negation ·<br/>attribution · modality · temporal"]
+    A[Claim text] --> T{"claim_triage.py<br/>is this a checkable claim?"}
+    T -->|"question · fragment · link ·<br/>gibberish · opinion"| Y["Verdict — nothing searched<br/>not_a_claim / not_objectively_verifiable"]
+    T -->|"checkable or prospective<br/>(+ salience, negation)"| B["claim_decomposer.py<br/>entities · predicate · negation ·<br/>attribution · modality · temporal"]
     B --> C{"knowledge_verifier.py<br/>deterministic match?"}
     C -->|yes| Z["Verdict — no web search needed"]
     C -->|no| D["query_generator.py<br/>multi-query generation"]
-    D --> E["providers/registry.py<br/>GNews · Guardian · NewsAPI · DuckDuckGo<br/>+ per-provider diagnostics"]
-    E --> F["relevance_filter.py<br/>entity/predicate/coherence scoring<br/>SEARCH_CANDIDATE → RELEVANT_SOURCE"]
+    D --> E["providers/registry.py<br/>Google News · Wikipedia · GNews ·<br/>Guardian · NewsAPI · DuckDuckGo<br/>+ per-provider diagnostics"]
+    E --> F["relevance_filter.py<br/>entity · action · predicate ·<br/>coherence · specificity scoring<br/>SEARCH_CANDIDATE → RELEVANT_SOURCE"]
     F --> G["article_extractor.py<br/>full-text + passage extraction"]
     G --> H["nli_service.py<br/>entailment / contradiction / neutral<br/>RELEVANT_SOURCE → CLASSIFIED_EVIDENCE"]
-    H --> I["evidence_aggregator.py<br/>source-tier weighting +<br/>independent-domain clustering"]
-    I --> J[Verdict + confidence + evidence list]
+    H --> I["evidence_aggregator.py<br/>source-tier weighting +<br/>independent-publisher clustering"]
+    I --> K{"assess_coverage<br/>search ran, nothing supports it,<br/>high salience, not negated, NLI up?"}
+    K -->|yes| L["no credible source reports this"]
+    K -->|no| J[Verdict + confidence + evidence list]
 ```
 
 ## Design principles
@@ -120,10 +156,15 @@ These are the non-negotiable rules the codebase is built around — they were th
 
 - **A search result is not evidence.** A candidate only counts as evidence after it passes relevance filtering *and* gets NLI-classified. The API separates `retrieval.candidate_count` (raw search hits) from `nli.classified_count` (actually checked) from `evidence.supporting_count + contradicting_count + neutral_count` (classified evidence by stance) — and the frontend never collapses these into one number.
 - **NLI unavailable ≠ neutral.** If the NLI model can't be reached or fails to load, every score comes back `available: false` and the caller must treat it as abstention — never as a "neutral" classification, which would be a false signal.
+- **"Nothing to check" ≠ "couldn't check it".** `claim_triage.py` runs before any network call. A question, a bare link, an unparseable string, or a value judgment gets `not_a_claim` / `not_objectively_verifiable` and is never searched — reporting a verification failure for text that contains no proposition tells the user their claim was checked and found wanting, which is false.
+- **A claim about the future cannot be true or false yet.** Prospective claims are never returned as `supported`. Coverage of them yields `reported_plan` — the plan was reported, which is not the same as the event happening.
+- **Absence of coverage is evidence only under narrow conditions.** See [Absence of coverage as evidence](#absence-of-coverage-as-evidence). In particular it never applies to a negated claim, never when the search failed, and never when NLI was unavailable.
+- **Being about the right subjects isn't relevance.** `relevance_filter.py` scores whether a document discusses the *action* the claim asserts, using a synonym vocabulary so different wording still matches ("resigned" / "steps down"). For the claim *"the US is going to ban Google"*, an article headlined "Google expands advertising tools in the United States" scored 0.68 and survived strict filtering purely because both entities appeared in it.
+- **An article that addresses nothing is not evidence for anything.** Sources NLI classifies as neutral are shown under *Related coverage*, explicitly not counted. They previously sat under a heading counting them as evidence, with each card asserting the source "supports" or "contradicts" the claim based on whichever score was larger — 0.04 against 0.03.
 - **Search failure ≠ no evidence ≠ false.** `retrieval.status` distinguishes `SEARCH_FAILED` (all providers errored), `NO_RESULTS` (providers ran, found nothing), `NO_RELEVANT_RESULTS` (results found, none relevant), and `SEARCH_SUCCESS`/`SEARCH_PARTIAL`. These are never conflated.
 - **The legacy MLP never determines the verdict.** `binary_truth_mlp.py` is a from-scratch neural net trained on the LIAR political-statements dataset. It's shown in the API response (`ml.score`) for transparency, flagged `auxiliary_only: true`, but the verdict computation (`evidence_verdict_score`, `merge_claim_summaries`) never reads it.
 - **NLI label order is not standardized across models — never guess it.** Different NLI models emit their entailment/contradiction/neutral labels in different, undocumented orders. `nli_service.py` only trusts a model's real named labels (order-independent) or an explicit, manually-verified per-model lookup table — an unrecognized model emitting raw `LABEL_0`/`LABEL_1`/`LABEL_2` output makes the service report `failed` and abstain, rather than risk silently inverting every verdict.
-- **Repeated coverage from one outlet isn't independent confirmation.** `evidence_aggregator.count_independent_groups` counts distinct publisher domains among classified evidence, so five re-posts of the same story don't look like five confirmations.
+- **Repeated coverage from one outlet isn't independent confirmation.** `evidence_aggregator.count_independent_groups` counts distinct **publisher** domains among classified evidence, so five re-posts of the same story don't look like five confirmations. Aggregator links are resolved to the real publisher first (`claim_verifier.resolve_publisher_host`) — counting by URL host would have filed ten different newsrooms reached through Google News as a single origin, and tiered every one of them as "unclassified".
 - **Confidence is categorical, not fake-precision.** The UI shows `low` / `medium` / `high` / `very high`, not a `73.42%` number implying a calibration that doesn't exist. Where a percentage bar *is* shown (evidence-balance visualization), it reads "—" / "Not available" instead of a misleading number when there's no classified evidence to measure.
 
 ## Tech stack
@@ -135,7 +176,7 @@ These are the non-negotiable rules the codebase is built around — they were th
 | **ML service** | Python 3.11, FastAPI, Uvicorn, NumPy, Pandas |
 | **NLI** | HuggingFace `transformers` + PyTorch (CPU-only wheel), a cross-encoder NLI model |
 | **Legacy ML** | From-scratch NumPy MLP + TF-IDF vectorizer (no sklearn/PyTorch) — auxiliary signal only |
-| **Search providers** | GNews, The Guardian, NewsAPI (all optional, key-gated), DuckDuckGo HTML (always-on fallback, no key needed) |
+| **Search providers** | Google News RSS + Wikipedia (keyless, on by default), GNews / The Guardian / NewsAPI (optional, key-gated), DuckDuckGo HTML (fallback) |
 | **Database** | MongoDB (Atlas or self-hosted) via Mongoose |
 | **Deployment** | Run locally for demos (see [Running this for a demo](#running-this-for-a-demo)); Render + Vercel configs included for reference |
 
@@ -224,18 +265,34 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
       "best_sentence": "The Federal Reserve raised its benchmark interest rate by a quarter percentage point on Wednesday.",
       "support_score": 0.91,
       "contradiction_score": 0.02,
-      "source_tier": "reporting",      // "primary" | "fact-check" | "reporting" | "unclassified"
-      "nli_available": true            // false ⇒ this is an unverified CANDIDATE, not evidence
+      "source_tier": "reporting",      // "primary" | "fact-check" | "reporting" | "reference" | "unclassified"
+      "nli_available": true,           // false ⇒ this is an unverified CANDIDATE, not evidence
+      "publisher": "reuters.com"       // who actually published it; differs from the URL host for aggregator links
     }
   ],
   "processing_time_seconds": 4.1,
-  "reasoning": "Relevant external evidence was found and classified.",
+  "reasoning": "Searched 12 sources across the configured news, reference and web providers; 3 discussed this claim and 3 were compared against it by the NLI model. 3 classified sources from 3 independent publishers support this claim.",
   "external_evidence_available": true,
-  "external_evidence_checked": true
+  "external_evidence_checked": true   // false ⇒ nothing was searched (deterministic check, or not a checkable claim)
 }
 ```
 
-**Reading this correctly:** always check `nli_available` (or `nli.classified_count` at the top level) before treating a `top_evidence` entry as confirmation of anything. A source with `nli_available: false` was *found*, not *verified* — the frontend labels these "Unverified" for exactly this reason.
+`verification` carries the outcome and the triage facts behind it:
+
+```jsonc
+"verification": {
+  "status": "unsupported_no_coverage",  // see the verdict table above
+  "reasoning": "Searched 14 sources ... the absence of any coverage is itself evidence against the claim.",
+  "claim_kind": "checkable",            // "checkable" | "prospective" | "opinion" | "not_a_claim"
+  "salience": "high"                    // "high" ⇒ a true version would necessarily have been reported
+}
+```
+
+**Reading this correctly:**
+
+- Always check `nli_available` (or `nli.classified_count` at the top level) before treating a `top_evidence` entry as confirmation of anything. A source with `nli_available: false` was *found*, not *verified* — the frontend labels these "Unverified" for exactly this reason.
+- A `top_evidence` entry with `stance: "unclear"` and `nli_available: true` was checked and found to address neither side. It is **not** evidence; the frontend files these under *Related coverage*.
+- `insufficient_evidence` is a statement about this system, not about the claim. Do not render it as a negative result.
 
 #### `GET /api/health` response schema
 
@@ -314,6 +371,18 @@ All served by `server/` (Express), all under `/api`:
 
 ### ML service (`ml-service/` — Render-specific vars matter only if you deploy it)
 
+**Search providers.** Google News RSS and Wikipedia require no key and are enabled by default; set their flag to `false` to switch one off. The keyed providers are skipped (with a `disabled` diagnostic, never silently) when their key is absent. `GET /api/health` reports the live state of all six.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GOOGLE_NEWS_ENABLED` | `true` | Google News RSS. No key. Best coverage for recent headlines. |
+| `WIKIPEDIA_ENABLED` | `true` | Wikipedia search. No key. Background knowledge for timeless claims. |
+| `DUCKDUCKGO_ENABLED` | `true` | DuckDuckGo HTML scrape. No key, frequently rate-limited or blocked. |
+| `GNEWS_API_KEY` | unset | Enables the GNews provider. |
+| `GUARDIAN_API_KEY` | unset | Enables The Guardian provider. |
+| `NEWSAPI_KEY` | unset | Enables the NewsAPI provider. |
+
+
 | Variable | Required? | Default | Notes |
 |---|---|---|---|
 | `NLI_ENABLED` | No | `true` | Set `false` only to intentionally disable NLI (e.g. emergency memory mitigation). |
@@ -332,7 +401,7 @@ All served by `server/` (Express), all under `/api`:
 | `MONGODB_URI` | **Yes** (for persistence) | `mongodb://localhost:27017/newschecker` | Without a reachable Mongo, the server still boots and `/api/check` still works — history/auth just won't persist. |
 | `JWT_SECRET` | **Yes in production** | a hardcoded dev-only string | **The server throws at startup if `NODE_ENV=production` and this is unset** — set it before deploying. |
 | `GOOGLE_CLIENT_ID` | **Yes** (for sign-in) | — | From Google Cloud Console. Must match the client's `VITE_GOOGLE_CLIENT_ID`. |
-| `FASTAPI_URL` | **Yes** in production | `http://localhost:8000` | Must point at your deployed ML service (Render URL). |
+| `FASTAPI_URL` | **Yes** in production | `http://localhost:8000` | Must point at your ML service. **A stale value here is the single most confusing failure this project has**: every check is proxied to a dead host and comes back `502` while your local ml-service sits idle logging nothing, which looks exactly like a broken local service. The server now prints its forwarding target at boot and warns when it is remote — check that line first. |
 | `CLIENT_URL` | No | `http://localhost:5173` | CORS origin. Only matters if client and server are deployed as separate origins. |
 | `ML_SERVICE_TIMEOUT_MS` | No | `180000` | Ceiling on the Node→FastAPI proxy call, so a hung ML service can't hang Express forever. 180s by default to cover the NLI model's first-time download plus a DuckDuckGo-only retrieval pass — see [Running this for a demo](#running-this-for-a-demo). |
 | `NODE_ENV` | Set by platform | — | Vercel sets this to `production` automatically — this is what triggers the `JWT_SECRET` requirement above. |
@@ -371,13 +440,21 @@ The first evidence check (a non-deterministic claim) triggers the NLI model down
 ## Testing
 
 ```bash
-# ML service — 41 tests covering claim decomposition, relevance filtering,
-# query generation, NLI label-mapping safety, evidence aggregation, provider
-# failure/diagnostics handling, and FastAPI endpoint behavior.
+# ML service — 93 tests covering claim triage, claim decomposition, relevance
+# and action filtering, query generation, NLI label-mapping safety, evidence
+# aggregation, absence-of-coverage rules, provider failure/diagnostics
+# handling, keyless-provider parsing, pipeline time budgets, and end-to-end
+# verdict behaviour for every claim shape (tests/test_claim_edge_cases.py).
 cd ml-service
 pip install -r requirements.txt
 python -m pytest tests/ -q
 # (falls back to: python -m unittest discover -s tests -v)
+
+# The provider tests verify PARSING against real payload shapes; they make no
+# network calls, so they do not prove either endpoint is reachable from a
+# given machine. To check reachability:
+#   python -c "from providers.google_news import search; print(len(search('test')))"
+#   python -c "from providers.wikipedia import search; print(len(search('Eiffel Tower')))"
 
 # Client — lint + production build
 cd client
@@ -458,20 +535,26 @@ newschecker/
 │   └── models/                     Check.js, User.js (Mongoose schemas)
 ├── ml-service/                   Python/FastAPI ML service
 │   ├── main.py                     FastAPI app, /api/health, /api/check
+│   ├── claim_triage.py             What kind of claim is this? (checkable/prospective/
+│   │                                opinion/not-a-claim, salience, negation) — pre-search
 │   ├── claim_decomposer.py         Entities, predicates, negation, attribution, modality
 │   ├── query_generator.py          Multi-query generation per claim
-│   ├── providers/                  GNews, Guardian, NewsAPI, DuckDuckGo + registry/diagnostics
-│   ├── relevance_filter.py         Candidate → relevant-source filtering
+│   ├── providers/                  google_news.py + wikipedia.py (keyless), GNews, Guardian,
+│   │                                NewsAPI, DuckDuckGo + registry/diagnostics
+│   ├── relevance_filter.py         Candidate → relevant-source filtering (entity + action)
 │   ├── article_extractor.py        Full-text + passage extraction
 │   ├── nli_service.py              Single authoritative NLI service (state machine + label safety)
-│   ├── evidence_aggregator.py      Stance aggregation + independent-source clustering
+│   ├── evidence_aggregator.py      Stance aggregation, independent-publisher clustering,
+│   │                                absence-of-coverage assessment
+│   ├── claim_verifier.py           Claim splitting, source tiering, publisher resolution
 │   ├── evidence_pipeline.py        Orchestrates the stages above
 │   ├── knowledge_verifier.py       Deterministic checks (arithmetic, well-known facts)
 │   ├── binary_truth_mlp.py         Legacy auxiliary MLP (from-scratch NumPy)
 │   ├── tfidf.py                    From-scratch TF-IDF vectorizer (feeds the legacy MLP only)
 │   ├── classifier.py / mlp_classifier.py   Experimental baselines, offline evaluation only
 │   ├── evaluate_models.py / evaluate_production_model.py   Offline evaluation scripts
-│   └── tests/                      41 tests across the modules above
+│   └── tests/                      93 tests across the modules above, incl.
+│                                    test_claim_edge_cases.py (end-to-end verdicts)
 ├── docs/screenshots/              README images
 ├── IMPROVEMENTS.md                 Dated engineering log of major fixes/audits
 └── vercel.json                     Client + server deployment config
@@ -482,7 +565,9 @@ newschecker/
 Being direct about these matters more than pretending they don't exist:
 
 - **No automated test suite for `server/`** (the Express layer) — `check.js`, `auth.js`, `history.js` are untested. The ML service and frontend build are covered; this is the biggest remaining test gap.
-- **Retrieval quality depends on live web search.** Without `GNEWS_API_KEY`/`GUARDIAN_API_KEY`/`NEWSAPI_KEY` configured, the system falls back to DuckDuckGo's HTML search alone, which is less comprehensive for very fresh or niche stories. The system is designed to abstain (`NO_RELEVANT_RESULTS` / `insufficient_evidence`) rather than force a weak match — but retrieval recall is still bounded by what's actually configured and reachable at request time.
+- **Retrieval quality depends on live web search.** An unconfigured checkout retrieves from Google News RSS, Wikipedia and DuckDuckGo; adding `GNEWS_API_KEY` / `GUARDIAN_API_KEY` / `NEWSAPI_KEY` widens it further. The system is designed to abstain rather than force a weak match — but recall is still bounded by what's configured and reachable at request time, and `GET /api/health` is the place to check which providers are actually live.
+- **Absence-of-coverage is an inference, not a proof.** `unsupported_no_coverage` says the providers we could reach returned nothing asserting the claim. Its guards (salience, candidate volume, non-negation, working NLI, working search) exist to keep it honest, and confidence scales with how much was searched — but a very fresh story, a non-English source, or a story outside the indexed providers can still produce it wrongly. It is deliberately never phrased as "false".
+- **Claim triage is heuristic.** `claim_triage.py` classifies by pattern, not by parsing. It handles the shapes in `tests/test_claim_edge_cases.py` — including the traps that broke it during development (factual superlatives read as opinions, irregular past tenses read as non-assertions, pasted links read as claims) — but an unusual phrasing can still land in the wrong bucket. The failure is designed to be safe in one direction: an over-admitted claim gets searched, an over-rejected one refuses to check something real, so the thresholds lean toward admitting.
 - **No temporal-validity checking.** The pipeline doesn't currently compare an article's publish date against the claim's implied timeframe — a stale article about an old event could theoretically be classified as evidence for a claim about current events, if it happens to pass relevance and NLI. This is a known gap, not yet implemented.
 - **Claim decomposition is regex-based, not a real parser.** `claim_decomposer.py` uses pattern matching for entities/predicates/negation/modality, not dependency parsing or a trained NER model. It works well for the claim shapes it's been tested against but isn't as robust as a full NLP pipeline would be.
 - **The legacy MLP's LIAR training data is US-political-statement-specific.** It's explicitly auxiliary and excluded from the verdict for exactly this reason — it isn't a general-purpose truth classifier and was never intended to be one in production.

@@ -11,6 +11,92 @@ from typing import Optional, List, Set
 from claim_decomposer import decompose_claim, ClaimDecomposition
 
 
+# ── Event vocabulary ─────────────────────────────────────────────────
+# The action a claim asserts is the whole point of the claim, and scoring it
+# was the filter's blind spot: for "the US is going to ban Google", an
+# article headlined "Google expands advertising tools in the United States"
+# scored 0.68 and survived strict filtering purely because both entities
+# appear in it, while the actually-relevant antitrust story scored lower.
+#
+# Each entry groups the surface forms of one event so a document written in
+# different words than the claim still matches ("resigned" / "steps down").
+# The vocabulary is curated rather than derived: an unrecognized verb makes
+# action scoring neutral, so a gap here weakens the filter but can never
+# cause it to reject a relevant article.
+_EVENT_VERBS: dict[str, tuple[str, ...]] = {
+    "ban": ("ban", "bans", "banned", "banning", "outlaw", "outlaws", "outlawed",
+            "prohibit", "prohibits", "prohibited", "prohibition", "forbid",
+            "forbids", "forbidden", "block", "blocks", "blocked", "restrict",
+            "restricts", "restricted", "crackdown"),
+    "resign": ("resign", "resigns", "resigned", "resignation", "quit", "quits",
+               "step down", "steps down", "stepped down", "stepping down",
+               "ousted", "removed from office"),
+    "arrest": ("arrest", "arrests", "arrested", "detained", "custody",
+               "charged", "indicted", "indictment"),
+    "acquire": ("acquire", "acquires", "acquired", "acquisition", "buy",
+                "buys", "bought", "purchase", "purchases", "purchased",
+                "takeover", "merger", "merges", "merged"),
+    "launch": ("launch", "launches", "launched", "unveil", "unveils",
+               "unveiled", "release", "releases", "released", "introduce",
+               "introduces", "introduced", "rollout", "rolls out"),
+    "die": ("die", "dies", "died", "death", "dead", "killed", "fatal",
+            "passed away"),
+    "invade": ("invade", "invades", "invaded", "invasion", "attack",
+               "attacks", "attacked", "strike", "strikes", "war"),
+    "increase": ("increase", "increases", "increased", "rise", "rises",
+                 "rose", "rising", "surge", "surges", "surged", "grew",
+                 "growth", "higher", "up", "improve", "improves", "improved",
+                 "improvement", "boost", "boosts", "boosted", "gain", "gains"),
+    "decrease": ("decrease", "decreases", "decreased", "fall", "falls",
+                 "fell", "falling", "drop", "drops", "dropped", "decline",
+                 "declines", "declined", "lower", "down", "cut", "cuts",
+                 "worsen", "worsens", "worsened", "harm", "harms", "harmed",
+                 "casts doubt", "no effect"),
+    "approve": ("approve", "approves", "approved", "approval", "pass",
+                "passes", "passed", "enact", "enacts", "enacted", "signed"),
+    "reject": ("reject", "rejects", "rejected", "deny", "denies", "denied",
+               "refuse", "refuses", "refused", "veto", "vetoed", "struck down"),
+    "rename": ("rename", "renames", "renamed", "renaming", "name change",
+               "rebrand", "rebrands", "rebranded", "new name"),
+    "fine": ("fine", "fines", "fined", "penalty", "penalties", "sued",
+             "lawsuit", "settlement", "antitrust"),
+    "close": ("close", "closes", "closed", "shut", "shuts", "shutdown",
+              "shut down", "collapse", "collapses", "collapsed", "bankrupt",
+              "bankruptcy", "dissolve", "dissolved"),
+    "elect": ("elect", "elects", "elected", "election", "wins", "won",
+              "victory", "sworn in", "inaugurated"),
+    "legalize": ("legalize", "legalizes", "legalized", "legalise",
+                 "legalised", "decriminalize", "decriminalized"),
+    "announce": ("announce", "announces", "announced", "announcement",
+                 "confirm", "confirms", "confirmed", "declare", "declares",
+                 "declared", "plans", "proposal", "proposes", "proposed"),
+}
+
+# Reverse index: surface form -> canonical event.
+_SURFACE_TO_EVENT: dict[str, str] = {
+    form: event
+    for event, forms in _EVENT_VERBS.items()
+    for form in forms
+}
+
+# Evidence *against* a claim usually states the opposite action, not the
+# claim's own. For "a four-day workweek improves productivity", the study that
+# refutes it is headlined "output fell under the shorter schedule" — no word
+# from the "increase" family anywhere in it. Matching only the claim's own
+# action therefore filtered out exactly the contradicting sources the system
+# exists to find, leaving a one-sided "supported" verdict on a genuinely
+# contested claim. Each pair is symmetric and both directions are registered.
+_ACTION_ANTONYMS: dict[str, str] = {}
+for _a, _b in (
+    ("increase", "decrease"),
+    ("approve", "reject"),
+    ("ban", "legalize"),
+    ("launch", "close"),
+):
+    _ACTION_ANTONYMS[_a] = _b
+    _ACTION_ANTONYMS[_b] = _a
+
+
 @dataclass
 class RelevanceScore:
     """Detailed relevance assessment for a document."""
@@ -18,6 +104,8 @@ class RelevanceScore:
     predicate_match_score: float  # 0.0-1.0: How relevant predicates are
     semantic_coherence: float  # 0.0-1.0: How well entities and predicates connect
     keyword_specificity: float  # 0.0-1.0: Avoids generic keyword overlap
+    action_match_score: float  # 0.0-1.0: Does the doc discuss the claim's action?
+    action_required: bool  # Did the claim assert a recognizable event at all?
     overall_relevance: float  # 0.0-1.0: Final relevance score
     reasons_included: List[str]  # Why this article might be relevant
     reasons_excluded: List[str]  # Why this article should be filtered
@@ -88,17 +176,23 @@ class RelevanceFilter:
         predicate_match = self._score_predicate_match(decomp, doc_keywords)
         semantic_coherence = self._score_semantic_coherence(decomp, doc_entities, doc_keywords)
         keyword_specificity = self._score_keyword_specificity(claim, decomp, doc_combined)
-        
-        # Determine overall relevance
+        claim_events = self._claim_events(claim)
+        action_match = self._score_action_match(claim_events, doc_combined)
+
+        # Determine overall relevance. Entity match still leads, but it no
+        # longer dominates: two entities both appearing is what let articles
+        # about the right subjects and the wrong event through.
         weights = {
-            'entity_match': 0.40,
-            'predicate_match': 0.25,
-            'semantic_coherence': 0.20,
+            'entity_match': 0.32,
+            'action_match': 0.23,
+            'predicate_match': 0.15,
+            'semantic_coherence': 0.15,
             'keyword_specificity': 0.15,
         }
-        
+
         overall = (
             entity_match * weights['entity_match'] +
+            action_match * weights['action_match'] +
             predicate_match * weights['predicate_match'] +
             semantic_coherence * weights['semantic_coherence'] +
             keyword_specificity * weights['keyword_specificity']
@@ -115,8 +209,15 @@ class RelevanceFilter:
         if semantic_coherence > 0.5:
             reasons_included.append("Entities connect to claim topic")
         
+        if claim_events and action_match >= 1.0:
+            reasons_included.append("Discusses the action the claim asserts")
+
         if entity_match < self.MIN_ENTITY_MATCH:
             reasons_excluded.append("Very few claim entities mentioned")
+        if claim_events and action_match == 0.0:
+            reasons_excluded.append(
+                "Mentions the claim's subjects but not the event it asserts"
+            )
         if overall < self.MIN_OVERALL_RELEVANCE:
             reasons_excluded.append("Insufficient relevance to claim")
         if keyword_specificity < 0.20:
@@ -127,6 +228,8 @@ class RelevanceFilter:
             predicate_match_score=predicate_match,
             semantic_coherence=semantic_coherence,
             keyword_specificity=keyword_specificity,
+            action_match_score=action_match,
+            action_required=bool(claim_events),
             overall_relevance=overall,
             reasons_included=reasons_included,
             reasons_excluded=reasons_excluded,
@@ -267,6 +370,42 @@ class RelevanceFilter:
         else:
             return 0.2  # Missing entities
     
+    def _claim_events(self, claim: str) -> Set[str]:
+        """Canonical events the claim asserts, from the curated vocabulary.
+
+        Returns an empty set when the claim uses no recognized event verb —
+        in which case action scoring stays neutral and this dimension has no
+        effect on whether the document is kept.
+        """
+        lowered = f" {claim.lower()} "
+        events: Set[str] = set()
+        for surface, event in _SURFACE_TO_EVENT.items():
+            if re.search(rf"(?<![a-z]){re.escape(surface)}(?![a-z])", lowered):
+                events.add(event)
+        return events
+
+    def _score_action_match(self, claim_events: Set[str], doc_combined: str) -> float:
+        """1.0 if the document discusses the claim's event — or its opposite.
+
+        Neutral (0.5) when the claim asserts no recognized event, so claims
+        outside the vocabulary are scored exactly as they were before.
+        """
+        if not claim_events:
+            return 0.5
+        lowered = f" {doc_combined.lower()} "
+        # The claim's own action, plus its opposite: a source that contradicts
+        # the claim is about the same event, stated the other way round.
+        wanted = set(claim_events)
+        wanted.update(
+            _ACTION_ANTONYMS[event] for event in claim_events
+            if event in _ACTION_ANTONYMS
+        )
+        for event in wanted:
+            for surface in _EVENT_VERBS[event]:
+                if re.search(rf"(?<![a-z]){re.escape(surface)}(?![a-z])", lowered):
+                    return 1.0
+        return 0.0
+
     def _score_keyword_specificity(
         self,
         claim: str,
@@ -323,11 +462,25 @@ class RelevanceFilter:
         threshold = self.STRICT_MIN_RELEVANCE if strict else self.MIN_OVERALL_RELEVANCE
         if relevance_score.overall_relevance < threshold:
             return False
+        # A document about the claim's subjects that never mentions the event
+        # the claim asserts is background, not evidence. Rejecting it is only
+        # safe because "we found coverage of these subjects and none of it
+        # reports this event" is now itself a reportable outcome
+        # (evidence_aggregator.assess_coverage) rather than a dead end.
+        if strict and relevance_score.action_required and relevance_score.action_match_score == 0.0:
+            return False
         if relevance_score.entity_match_score == 0 and relevance_score.keyword_specificity < 0.35:
             return False
         if relevance_score.entity_match_score < 0.5 and relevance_score.predicate_match_score < 0.5:
             return False
-        if relevance_score.predicate_match_score < 0.25:
+        # A document can discuss exactly the event the claim is about while
+        # sharing almost none of the claim's wording — which is typical of
+        # contradicting coverage, since it describes the opposite outcome in
+        # its own vocabulary. Rejecting on predicate overlap alone dropped
+        # those, leaving one-sided "supported" verdicts on contested claims.
+        # A definite action match is the stronger predicate signal, so it
+        # overrides this floor.
+        if relevance_score.predicate_match_score < 0.25 and relevance_score.action_match_score < 1.0:
             return False
         return True
     

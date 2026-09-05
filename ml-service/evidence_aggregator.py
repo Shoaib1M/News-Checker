@@ -31,6 +31,7 @@ class ClassifiedEvidence:
     contradiction_score: float
     nli_available: bool
     stance: str
+    publisher: str = ""
 
 
 def compute_stance(results: list[ClassifiedEvidence]) -> dict:
@@ -127,6 +128,10 @@ def count_independent_groups(results: Iterable) -> int:
     the remaining distinct publisher domains so the same outlet's coverage
     can't be presented as multiple independent confirmations.
 
+    The publisher host is preferred over the URL host: an article reached
+    through an aggregator carries the aggregator's hostname, so counting by
+    URL would file ten different newsrooms as a single origin.
+
     Accepts anything with ``.url`` and ``.nli_available`` attributes
     (``ClassifiedEvidence`` or ``evidence_pipeline.EvidenceResult``).
     """
@@ -134,9 +139,90 @@ def count_independent_groups(results: Iterable) -> int:
     for r in results:
         if not getattr(r, "nli_available", False):
             continue
-        host = urlparse(r.url).netloc.lower().split(":")[0]
+        host = getattr(r, "publisher", "") or urlparse(r.url).netloc.lower().split(":")[0]
         if host.startswith("www."):
             host = host[4:]
         if host:
             domains.add(host)
     return len(domains)
+
+
+# ── Absence-of-evidence reasoning ────────────────────────────────────
+# A search that ran correctly and turned up nothing supporting the claim is
+# not the same event as a search that failed. For a claim whose true version
+# would necessarily have been reported everywhere, the first case is a real
+# finding; the second is still just "we don't know". Conflating them was the
+# single biggest correctness gap in this pipeline: an obviously fabricated
+# headline and a broken DuckDuckGo request produced the identical verdict.
+#
+# This is deliberately narrow. All four conditions must hold, because the
+# cost of a false positive here is asserting that nobody reported something
+# when in fact we simply failed to look properly.
+MIN_CANDIDATES_FOR_ABSENCE = 4
+
+# NO_RELEVANT_RESULTS belongs here: it means the search ran and returned a
+# pool of candidates, and the relevance filter found that none of them
+# discussed what the claim asserts. That is the *canonical* shape of an
+# absence-of-coverage finding, not a retrieval failure. SEARCH_FAILED and
+# NO_RESULTS stay out — those tell us nothing about the world.
+_SEARCH_WORKED = {"SEARCH_SUCCESS", "SEARCH_PARTIAL", "NO_RELEVANT_RESULTS"}
+
+
+def assess_coverage(
+    stance: dict,
+    retrieval_status: str,
+    candidate_count: int,
+    salience: str,
+    prospective: bool = False,
+    nli_ready: bool = True,
+    negated: bool = False,
+) -> dict | None:
+    """Return an overriding stance when *absence of coverage* is itself evidence.
+
+    Returns ``None`` — leaving the caller's existing stance untouched — unless
+    every one of these holds:
+
+    1. The search actually ran (``SEARCH_SUCCESS`` / ``SEARCH_PARTIAL``).
+       A failed or timed-out search tells us nothing about the world.
+    2. It returned a real pool of candidates (``MIN_CANDIDATES_FOR_ABSENCE``).
+       Two results is a thin search, not a canvass of the press.
+    3. Nothing in that pool supported the claim, and nothing contradicted it
+       either — a contradiction is stronger evidence and should win on its own.
+    4. The claim is high-salience: a true version of it could not have gone
+       unreported (see claim_triage).
+    5. The claim is not negated. Absence of coverage cannot count against a
+       claim that something did *not* happen — no outlet reporting that the
+       US banned Google is exactly what "the US did not ban Google" predicts,
+       so treating silence as evidence against it inverts the inference.
+    6. The NLI model was available. "No retrieved source supports this" is a
+       claim about what the sources say, and we only know what they say if
+       something actually read them. With NLI down we compared nothing, so
+       the honest answer stays "could not verify".
+
+    Parameters
+    ----------
+    prospective:
+        True when the claim describes a future event. The wording changes —
+        the finding is that no source reports the *plan*, not that no source
+        reports the event — but the logic is identical.
+    """
+    if negated:
+        return None
+    if not nli_ready:
+        return None
+    if retrieval_status not in _SEARCH_WORKED:
+        return None
+    if candidate_count < MIN_CANDIDATES_FOR_ABSENCE:
+        return None
+    if salience != "high":
+        return None
+    if stance.get("supporting_count", 0) > 0 or stance.get("contradicting_count", 0) > 0:
+        return None
+
+    subject = "such a plan" if prospective else "this"
+    return {
+        **stance,
+        "status": "unsupported_no_coverage",
+        "verdict": f"no credible source reports {subject}",
+        "coverage_checked": candidate_count,
+    }

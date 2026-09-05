@@ -471,3 +471,121 @@ previously had 1 and 2 swapped. It never produced a wrong verdict — these
 models ship real label names, so the substring path wins — but a guessed
 order that silently inverts entailment and neutral is precisely the failure
 that table exists to prevent.
+
+---
+
+## 2026-09-05 — Claims that aren't ordinary factual assertions
+
+### The report
+
+> "The model works for normal claims / claims from the LIAR dataset, but when
+> my claim goes a bit haywire it fails."
+
+Submitted claim: *"The United States is Going to ban Google across all its
+cities."*
+
+### What was actually happening
+
+Reproduced with the search and NLI layers replaced by doubles, so the pipeline
+ran exactly as in production against known inputs:
+
+```
+retrieval: SEARCH_SUCCESS   candidates 2   relevant 1
+stance:    supporting 0  contradicting 0  neutral 1  →  insufficient_evidence
+surviving evidence: "Google expands advertising tools in the United States"
+```
+
+Every stage did its job. Search worked. NLI correctly judged that an article
+about advertising products neither entails nor contradicts a claim about a
+nationwide ban. And the answer the user saw was **"insufficient evidence"**
+next to an article about advertising tools.
+
+Three separate defects converged there:
+
+1. **The system had exactly one way to say "I don't know", and used it for
+   opposite situations.** A fabricated headline nobody has ever reported, a
+   claim about a future event, a question, keyboard mash, and a genuinely
+   broken search all produced `insufficient_evidence`. Those are five
+   different findings, and only one of them is a limitation of ours.
+2. **Relevance had no notion of the claim's action.** For the ban claim, the
+   advertising article scored 0.68 and survived strict filtering purely
+   because "Google" and "United States" both appeared in it, while the
+   antitrust story scored lower and was dropped.
+3. **A neutral classification was displayed as evidence.** Every
+   NLI-classified card asserted the source "supports" or "contradicts" the
+   claim, chosen by whichever score was larger — so 0.04 against 0.03 rendered
+   as "contradicts the claim".
+
+### What changed
+
+**`claim_triage.py` (new).** Classifies the proposition before any network
+call: `checkable` / `prospective` / `opinion` / `not_a_claim`, plus a
+**salience** judgment (would a true version of this necessarily have been
+reported?) and negation detection. Non-claims are never searched.
+
+**`evidence_aggregator.assess_coverage` (new).** Absence of coverage becomes a
+finding — *"no credible source reports this"* — but only when the search ran,
+returned a real candidate pool, produced nothing supporting **or**
+contradicting, the claim is high-salience and non-negated, and NLI was
+available. Each guard is there because the cost of a false positive is
+asserting that nobody reported something when we simply failed to look.
+
+**Prospective claims** can no longer return true or false. Supporting coverage
+yields `reported_plan` — the plan was reported, which is not the event
+happening.
+
+**`relevance_filter.py`** scores whether a document discusses the action the
+claim asserts, using a curated synonym vocabulary so different wording still
+matches ("resigned" / "steps down").
+
+**Retrieval.** Google News RSS and Wikipedia providers, both keyless and on by
+default. Without API keys the only path was scraping DuckDuckGo, which is
+frequently blocked and is not a news index — so a fresh headline came back
+with evergreen pages, which reads as the system misunderstanding the claim.
+Aggregator links now resolve to the real publisher, so source tiering works
+and ten newsrooms reached via Google News aren't counted as one origin.
+
+**Frontend** (layout, palette and page structure unchanged). Neutral sources
+move to a *Related coverage* section stated as not counted. The gauge shows a
+word rather than a number for outcomes that aren't evidence measurements. The
+legacy LIAR-trained MLP is labelled a prior and moved below the evidence rows.
+It never influenced the verdict — `evidence_verdict_score` and
+`merge_claim_summaries` don't read it — but showing it first invited the
+opposite reading.
+
+### Bugs found while testing, not before
+
+Sweeping many claim shapes through the endpoint and reading the verdicts —
+rather than only checking assertions — surfaced defects the original
+investigation missed:
+
+- `merge_claim_summaries` dropped the per-stance counts, so the coverage check
+  read every claim as unsupported; and it mapped an unrecognised status to
+  `contradicted`.
+- The absence verdict fired with NLI down, where nothing had read any source.
+- `NO_RELEVANT_RESULTS` was excluded from "the search worked", though it is
+  the canonical shape of an absence finding.
+- Triage traps: "the best-selling car" read as an opinion; irregular past
+  tenses ("hit", "won", "bought") read as no assertion at all; a pasted URL
+  read as a claim.
+- `knowledge_verifier` held its own copy of the superlative bug and runs
+  first, so fixing triage alone changed nothing.
+- **The most serious one:** the action filter discarded *contradicting*
+  evidence. A refutation describes the opposite outcome in its own vocabulary,
+  so "Study casts doubt on four-day week gains / output fell under the shorter
+  schedule" shared almost no wording with "a four-day workweek improves
+  productivity" and was dropped before NLI saw it — returning a confident
+  **supported** verdict on a genuinely contested claim. Action matching now
+  accepts the claim's action or its antonym.
+
+### Verification
+
+- 98 ml-service tests, including 32 end-to-end verdict cases covering
+  fabricated headlines, future claims, negations, non-claims, opinions,
+  degraded search and degraded NLI.
+- `ml-service/verdict_sweep.py` prints the full behaviour matrix in one table.
+- All five verdict states screenshotted at desktop and mobile widths; no
+  horizontal overflow at either.
+- **Not verified here:** live reachability of Google News RSS and Wikipedia.
+  The sandbox proxy blocks both hosts, so only their parsers are tested,
+  against real payload shapes. `GET /api/health` reports live provider state.

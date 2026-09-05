@@ -15,16 +15,42 @@ from typing import Callable
 
 from providers import SearchResult, ProviderDiagnostic
 from providers.duckduckgo import search as ddg_search
+from providers.google_news import search as google_news_search
 from providers.news_apis import search_newsapi, search_gnews, search_guardian
+from providers.wikipedia import search as wikipedia_search
 
 
 # ── Provider configuration ───────────────────────────────────────────
+# Keyed providers. Each is skipped, with an "disabled" diagnostic, when its
+# API key is absent — never silently, so a demo that returns thin evidence
+# can be traced to missing configuration rather than to the world being empty.
 PROVIDERS: list[tuple[str, str, Callable]] = [
     # (name, env_key, search_function)
     ("gnews", "GNEWS_API_KEY", search_gnews),
     ("guardian", "GUARDIAN_API_KEY", search_guardian),
     ("newsapi", "NEWSAPI_KEY", search_newsapi),
 ]
+
+# Keyless providers, on by default. These exist so an unconfigured checkout
+# still retrieves real, recent, attributable coverage: previously the only
+# keyless path was scraping DuckDuckGo, which is frequently blocked and is
+# not a news index, so a fresh headline came back with evergreen web pages
+# that looked to the user like the system had misunderstood the claim.
+#
+# Each can be turned off with its env flag (e.g. GOOGLE_NEWS_ENABLED=false).
+KEYLESS_PROVIDERS: list[tuple[str, str, Callable, int]] = [
+    # (name, env_flag, search_function, results_per_query)
+    ("google_news", "GOOGLE_NEWS_ENABLED", google_news_search, 5),
+    ("wikipedia", "WIKIPEDIA_ENABLED", wikipedia_search, 3),
+]
+
+
+def _flag_enabled(name: str, default: bool = True) -> bool:
+    """Read an on-by-default boolean environment flag."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ── Deduplication ────────────────────────────────────────────────────
@@ -115,15 +141,19 @@ def search_all_providers(
                 name, query, search_fn,
                 max(2, max_per_provider), bool(os.getenv(env_key)),
             ))
+        for name, env_flag, search_fn, per_query in KEYLESS_PROVIDERS:
+            jobs.append((
+                name, query, search_fn, per_query, _flag_enabled(env_flag),
+            ))
         if use_duckduckgo:
             jobs.append((
                 "duckduckgo", query, ddg_search,
-                max(3, max_per_provider // 2), True,
+                max(3, max_per_provider // 2), _flag_enabled("DUCKDUCKGO_ENABLED"),
             ))
 
     completed: list[tuple[ProviderDiagnostic, list[SearchResult]]] = []
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         futures = [(pool.submit(_run_one, *job), job) for job in jobs]
         for future, job in futures:
             remaining = None

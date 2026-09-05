@@ -42,8 +42,14 @@ FALSE_PATTERNS = (
      "historical", "The Great Wall is not visibly distinguishable from the Moon with the naked eye."),
 )
 
+# Superlatives only mark an opinion in predicative position. Matching the bare
+# phrase classified "the best-selling car in 2024 was the Model Y" — a fact
+# about sales figures — as a value judgment. This mirrors the same rule in
+# claim_triage._OPINION_MARKERS; both run, so both had to be fixed.
 SUBJECTIVE_PATTERN = re.compile(
-    r"\b(?:is )?(?:the best|amazing|beautiful|delicious|worst)\b",
+    r"\b(?:is|are|was|were)\s+(?:the\s+(?:best|worst|greatest)\b(?!-|\s*(?:selling|"
+    r"known|paid|performing|rated|documented|recorded|attended))"
+    r"|(?:so\s+|very\s+|really\s+)?(?:amazing|beautiful|delicious))\b",
     re.IGNORECASE,
 )
 
