@@ -204,3 +204,52 @@ class TestFetchGuards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestClaimSplitting(unittest.TestCase):
+    """Splitting *user input* — the same abbreviation trap, higher stakes.
+
+    article_extractor protected abbreviations; claim_verifier had its own
+    splitter without that protection, so the guard existed in the codebase but
+    not where the user's own words were being cut up.
+    """
+
+    def claims(self, statement):
+        from claim_verifier import extract_claims
+        return extract_claims(statement, max_claims=3)
+
+    def test_a_country_abbreviation_does_not_end_a_sentence(self):
+        """"The U.S. government banned Google" lost its subject entirely."""
+        self.assertEqual(
+            self.claims("The U.S. government banned Google across all cities in 2024."),
+            ["The U.S. government banned Google across all cities in 2024."],
+        )
+
+    def test_titles_and_months_do_not_end_a_sentence(self):
+        for statement in (
+            "Dr. Smith announced the vaccine trial results on Tuesday morning.",
+            "Inflation rose 3.2% in Aug. and is expected to keep climbing.",
+            "Sen. Warren said the U.K. and E.U. agreed on Sept. 3 to new rules.",
+        ):
+            with self.subTest(statement=statement):
+                self.assertEqual(self.claims(statement), [statement])
+
+    def test_a_split_that_orphans_a_fragment_is_abandoned(self):
+        """Dropping "Apple, Google" silently checked only Microsoft."""
+        statement = "Apple, Google; and Microsoft were all fined by regulators this year."
+        self.assertEqual(self.claims(statement), [statement])
+
+    def test_genuine_multi_claim_statements_still_split(self):
+        self.assertEqual(
+            self.claims("The prime minister resigned this morning. "
+                        "The finance minister was arrested."),
+            ["The prime minister resigned this morning.",
+             "The finance minister was arrested."],
+        )
+
+    def test_a_single_claim_is_returned_whole(self):
+        statement = "The prime minister of India resigned this morning"
+        self.assertEqual(self.claims(statement), [statement])
+
+    def test_empty_input_yields_no_claims(self):
+        self.assertEqual(self.claims("   "), [])

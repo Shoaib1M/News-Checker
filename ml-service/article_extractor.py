@@ -139,20 +139,50 @@ def extract_article(url: str, timeout: int = 6) -> tuple[str, str]:
     return parser.title, " ".join(parser.paragraphs)
 
 
+# Abbreviations whose full stop does not end a sentence. Splitting on them
+# silently truncates the text: "The U.S. government banned Google" split after
+# "U." and, with the two-word fragment discarded, became "government banned
+# Google" — the claim's subject deleted.
+#
+# Exported because claim_verifier splits *user input* the same way and needs
+# the same protection. It had its own splitter without it, so the protection
+# existed in the codebase but not where it mattered most.
+_ABBREVIATIONS = (
+    "Mr", "Mrs", "Ms", "Dr", "Prof", "Sr", "Jr", "St", "Sen", "Rep", "Gov",
+    "Pres", "Gen", "Lt", "Col", "Capt", "Rev", "Hon",
+    "vs", "etc", "approx", "est", "govt", "dept", "inc", "ltd", "co", "corp",
+    "no", "fig", "al",
+    "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct",
+    "Nov", "Dec",
+    r"U\.S", r"U\.K", r"U\.N", r"E\.U", r"D\.C",
+)
+_ABBREVIATION_RE = re.compile(
+    r"\b(" + "|".join(_ABBREVIATIONS) + r")\.", re.IGNORECASE
+)
+_DOT_PLACEHOLDER = "<DOT>"
+
+
+def protect_abbreviations(text: str) -> str:
+    """Hide the full stops in abbreviations so they can't end a sentence."""
+    return _ABBREVIATION_RE.sub(
+        lambda m: m.group(0).replace(".", _DOT_PLACEHOLDER), text
+    )
+
+
+def restore_abbreviations(text: str) -> str:
+    """Undo :func:`protect_abbreviations`."""
+    return text.replace(_DOT_PLACEHOLDER, ".")
+
+
 def split_sentences(text: str) -> list[str]:
     """Split text into sentences, handling abbreviations like 'Mr.' and 'U.S.'."""
     cleaned = re.sub(r"\s+", " ", text).strip()
     if not cleaned:
         return []
-    protected = re.sub(
-        r"\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|approx|est|govt|dept|U\.S|U\.K)\.",
-        lambda m: m.group(0).replace(".", "<DOT>"),
-        cleaned,
-        flags=re.IGNORECASE,
-    )
+    protected = protect_abbreviations(cleaned)
     parts = re.split(r'(?<=[.!?])\s+(?=[A-Z"\'(\[])', protected)
     return [
-        part.replace("<DOT>", ".").strip()
+        restore_abbreviations(part).strip()
         for part in parts
         if len(part.split()) >= 5
     ]
