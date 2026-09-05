@@ -422,3 +422,21 @@ measured rather than assumed:
 Tests: 41 → 48, including `tests/test_pipeline_budget.py`, which locks in
 the budget guarantee for the single-claim, hanging-article, expired-deadline
 and multi-claim-endpoint cases.
+
+## 2026-09-05 (follow-up 4): the last unbounded path — NLI model load
+
+The time budget added in follow-up 3 bounded search and article extraction,
+but not the NLI model load. `score_many()` called `_ensure_loaded()` lazily,
+so the *first* evidence-requiring request after a restart downloaded the
+model (hundreds of MB on a cold cache) **inside the HTTP request** — outside
+`EVIDENCE_BUDGET_SECONDS`, and silent, because nothing is logged until the
+load finishes and uvicorn only writes its access line after a response
+completes. The service looked hung; it was downloading.
+
+- Added `NLIService.warm_up()` and call it from the FastAPI lifespan
+  (`NLI_PRELOAD`, default true). The download now happens once at boot with
+  a clear log line, so requests never pay for it and `/api/health` reports
+  real readiness before any traffic arrives.
+- A failed preload is non-fatal: the service still starts, still answers
+  deterministic claims, and `/api/health` reports the exact error — verified
+  by starting with `transformers` absent.

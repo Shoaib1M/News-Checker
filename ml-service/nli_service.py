@@ -158,6 +158,19 @@ class NLIService:
         still waiting for the first call to trigger loading."""
         return self._status in {self.LOADING, self.READY}
 
+    def warm_up(self) -> dict:
+        """Load the model now rather than on the first scoring call.
+
+        Called at service startup. Without this the first evidence-requiring
+        request pays for a multi-hundred-megabyte model download *inside the
+        HTTP request*, which no upstream timeout can absorb — and it happens
+        invisibly, since nothing is logged until the load finishes. Doing it
+        at boot makes the cost visible in the startup log and leaves
+        ``/api/health`` honest about readiness before any traffic arrives.
+        """
+        self._ensure_loaded()
+        return self.status
+
     # ── Lazy model loading ───────────────────────────────────────────
     def _ensure_loaded(self) -> None:
         """Load the model exactly once, under a lock."""
