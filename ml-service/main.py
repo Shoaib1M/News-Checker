@@ -91,6 +91,29 @@ _train_max_values = None
 # with honest diagnostics rather than a dead request.
 EVIDENCE_BUDGET_SECONDS = float(os.getenv("EVIDENCE_BUDGET_SECONDS", "45"))
 
+# Retrieval outcomes ordered worst to best. A multi-claim statement takes the
+# WORST status across its claims, because the status gates absence-of-coverage
+# reasoning: reporting "no credible source reports this" on the strength of
+# one claim's successful search, while another claim's search failed, asserts
+# something about the world that was never checked.
+#
+# Previously the loop simply overwrote the status each iteration, so a
+# three-claim statement reported whatever happened to the last claim.
+_RETRIEVAL_SEVERITY = {
+    "SEARCH_FAILED": 0,
+    "NO_RESULTS": 1,
+    "NO_RELEVANT_RESULTS": 2,
+    "SEARCH_PARTIAL": 3,
+    "SEARCH_SUCCESS": 4,
+}
+
+
+def _worst_retrieval_status(statuses: list[str]) -> str:
+    """The most pessimistic retrieval outcome among several claims."""
+    if not statuses:
+        return "NO_RESULTS"
+    return min(statuses, key=lambda s: _RETRIEVAL_SEVERITY.get(s, 0))
+
 
 """
 PURPOSE:
@@ -695,6 +718,7 @@ def check_statement(request: CheckRequest):
         # One budget shared across every claim, so a multi-claim statement
         # can't multiply the worst case by the number of claims.
         pipeline_deadline = time.monotonic() + EVIDENCE_BUDGET_SECONDS
+        claim_statuses: list[str] = []
         try:
             for claim in claims:
                 outcome = run_pipeline(
@@ -703,8 +727,12 @@ def check_statement(request: CheckRequest):
                 )
                 claim_summaries.append((claim, outcome.stance))
                 all_evidence.extend(outcome.evidence)
-                retrieval_status = outcome.retrieval_status
-                retrieval_diagnostics = outcome.diagnostics
+                # Accumulate, never overwrite: the status gates absence
+                # reasoning for the whole statement, and the diagnostics are
+                # how a thin result is traced back to a provider.
+                claim_statuses.append(outcome.retrieval_status)
+                retrieval_diagnostics.extend(outcome.diagnostics)
+                retrieval_status = _worst_retrieval_status(claim_statuses)
                 candidate_count += outcome.candidate_count
                 relevant_count += outcome.relevant_count
         except Exception as err:

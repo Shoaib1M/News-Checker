@@ -548,3 +548,57 @@ class TestDeterministicLayerQualifiers(unittest.TestCase):
         from knowledge_verifier import _safe_arithmetic
         self.assertIsNone(_safe_arithmetic("9 ** 9 ** 9"))
         self.assertIsNone(_safe_arithmetic("2 ** 200000"))
+
+
+# ── 9. Multi-claim statements must not report one claim's retrieval ──
+class TestMultiClaimRetrievalState(VerdictCaseMixin, unittest.TestCase):
+    """The loop overwrote retrieval status per claim, keeping only the last.
+
+    That matters because the status gates absence-of-coverage reasoning. With
+    the last claim's search succeeding and an earlier one having failed, the
+    system could report "no credible source reports this" about a statement
+    whose retrieval never actually ran.
+    """
+
+    TWO_CLAIMS = ("The prime minister resigned this morning. "
+                  "The finance minister was arrested yesterday.")
+
+    def run_with_outcomes(self, *outcomes):
+        """Drive /api/check with a scripted PipelineOutcome per claim."""
+        from evidence_pipeline import PipelineOutcome
+        from evidence_aggregator import compute_stance
+
+        scripted = iter(outcomes)
+        fallback = PipelineOutcome(compute_stance([]), [], "SEARCH_SUCCESS", [], 5, 0)
+        with patch.object(main, "run_pipeline", lambda *a, **k: next(scripted, fallback)):
+            return self.check(self.TWO_CLAIMS)
+
+    def test_a_failure_on_any_claim_is_not_hidden_by_a_later_success(self):
+        from evidence_pipeline import PipelineOutcome
+        from evidence_aggregator import compute_stance
+
+        body = self.run_with_outcomes(
+            PipelineOutcome(compute_stance([]), [], "SEARCH_FAILED", [], 0, 0),
+            PipelineOutcome(compute_stance([]), [], "SEARCH_SUCCESS",
+                            [{"provider": "gnews", "status": "success"}], 9, 0),
+        )
+
+        self.assertEqual(body["retrieval"]["status"], "SEARCH_FAILED")
+        self.assertNotEqual(
+            body["verification"]["status"], "unsupported_no_coverage",
+            "a failed search on any claim must block the absence verdict",
+        )
+
+    def test_diagnostics_from_every_claim_are_kept(self):
+        from evidence_pipeline import PipelineOutcome
+        from evidence_aggregator import compute_stance
+
+        body = self.run_with_outcomes(
+            PipelineOutcome(compute_stance([]), [], "SEARCH_SUCCESS",
+                            [{"provider": "gnews", "status": "success"}], 5, 0),
+            PipelineOutcome(compute_stance([]), [], "SEARCH_SUCCESS",
+                            [{"provider": "wikipedia", "status": "success"}], 5, 0),
+        )
+
+        providers = {d.get("provider") for d in body["retrieval"]["diagnostics"]}
+        self.assertEqual(providers, {"gnews", "wikipedia"})
