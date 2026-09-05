@@ -1,16 +1,17 @@
-"""Claim extraction, source classification, and NLI-backed evidence scoring.
+"""Claim extraction, source classification, and evidence tiering.
 
 This module deliberately separates *finding an article about a claim* from
 *establishing whether that article entails the claim*.  Search relevance is
 only used to choose candidate passages; it is never used as a truth score.
+
+NLI scoring is handled by ``nli_service.py`` — the single authoritative
+NLI service.  This module no longer contains an NLI scorer.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 import re
-from typing import Callable, Iterable
 from urllib.parse import urlparse
 
 
@@ -86,88 +87,3 @@ def extract_claims(text: str, max_claims: int = 6) -> list[str]:
         if len(claims) >= max_claims:
             break
     return claims or [normalized]
-
-
-class NLIScorer:
-    """Lazy Hugging Face NLI wrapper.
-
-    Importing/downloading the model is deferred until evidence is available.
-    If the model cannot load, callers receive an explicit unavailable result;
-    the application must abstain instead of reverting to keyword heuristics.
-    """
-
-    def __init__(self, pipeline_factory: Callable | None = None, model_name: str | None = None):
-        self.model_name = model_name or os.getenv(
-            "NLI_MODEL", "cross-encoder/nli-deberta-v3-small"
-        )
-        self._pipeline_factory = pipeline_factory
-        self._pipeline = None
-        self.error: str | None = None
-
-    def _load(self):
-        if self._pipeline is not None or self.error is not None:
-            return
-        # The default Render instance has limited RAM. Keep the optional
-        # transformer model disabled there unless explicitly enabled.
-        if self._pipeline_factory is None and os.getenv("NLI_ENABLED", "false").lower() not in {
-            "1", "true", "yes", "on"
-        }:
-            self.error = "NLI disabled; set NLI_ENABLED=true to enable it"
-            return
-        try:
-            factory = self._pipeline_factory
-            if factory is None:
-                from transformers import pipeline
-                factory = pipeline
-            self._pipeline = factory(
-                "text-classification", model=self.model_name, tokenizer=self.model_name,
-                device=-1,
-            )
-        except Exception as error:  # model/network failures must cause abstention
-            self.error = str(error)
-
-    @staticmethod
-    def _normalise_label(label: str) -> str:
-        label = label.lower().replace("_", " ")
-        if "entail" in label or label in {"label 2", "label_2"}:
-            return "entailment"
-        if "contradict" in label or label in {"label 0", "label_0"}:
-            return "contradiction"
-        return "neutral"
-
-    def score_many(self, claim: str, passages: Iterable[str]) -> list[dict]:
-        passages = list(passages)
-        if not passages:
-            return []
-        self._load()
-        if self._pipeline is None:
-            return [
-                {
-                    "entailment": 0.0,
-                    "contradiction": 0.0,
-                    "neutral": 1.0,
-                    "available": False,
-                }
-                for _ in passages
-            ]
-
-        pairs = [{"text": passage, "text_pair": claim} for passage in passages]
-        try:
-            results = self._pipeline(pairs, top_k=None, truncation=True, max_length=512)
-        except TypeError:
-            # Keeps injected test doubles and older pipeline versions usable.
-            results = [self._pipeline(pair) for pair in pairs]
-        except Exception as error:
-            self.error = str(error)
-            return self.score_many(claim, passages)
-
-        scores = []
-        for output in results:
-            if isinstance(output, dict):
-                output = [output]
-            values = {"entailment": 0.0, "contradiction": 0.0, "neutral": 0.0}
-            for item in output:
-                values[self._normalise_label(str(item.get("label", "")))] = float(item.get("score", 0.0))
-            values["available"] = True
-            scores.append(values)
-        return scores

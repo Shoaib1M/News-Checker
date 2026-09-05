@@ -31,7 +31,8 @@ import time
 import numpy as np
 
 from tfidf import TFIDFVectorizer
-from claim_verifier import NLIScorer, classify_source
+from claim_verifier import classify_source
+from nli_service import get_nli_service
 from claim_decomposer import decompose_claim, ClaimDecomposition
 from query_generator import QueryGenerator
 from relevance_filter import RelevanceFilter
@@ -132,9 +133,8 @@ class EvidenceResult:
     nli_available: bool = False
 
 
-# Loaded lazily only after relevant passages have been found.  The app abstains
-# when this model is unavailable rather than treating lexical overlap as proof.
-_nli_scorer = NLIScorer()
+# The NLI scorer is provided by the centralized nli_service singleton.
+# The app abstains when NLI is unavailable rather than treating lexical overlap as proof.
 _last_retrieval_diagnostics = []
 
 # ---------------------------------------------------------------------------
@@ -858,7 +858,7 @@ def score_document_stance(statement, document):
     if not passages:
         return 0.0, 0.0, "", False
 
-    nli_scores = _nli_scorer.score_many(statement, passages)
+    nli_scores = get_nli_service().score_many(statement, passages)
     if not nli_scores or not nli_scores[0].get("available"):
         return 0.0, 0.0, passages[0], False
 

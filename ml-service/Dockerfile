@@ -2,13 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Render's starter instances have 512 MB of RAM. Keep PyTorch CPU-only and
-# prevent its thread pools from allocating memory before Uvicorn binds a port.
+# Keep PyTorch CPU-only and limit thread-pool memory allocation.
+# NLI_ENABLED defaults to true so the core verification engine works.
+# Override via Render environment variables if container RAM is insufficient.
 ENV PYTHONUNBUFFERED=1 \
     OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
     TOKENIZERS_PARALLELISM=false \
-    NLI_ENABLED=false \
+    NLI_ENABLED=true \
     NLI_MODEL=cross-encoder/nli-deberta-v3-small
 
 COPY requirements.txt .

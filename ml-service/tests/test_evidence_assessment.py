@@ -7,7 +7,8 @@ if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
 import evidence_scraper
-from claim_verifier import NLIScorer
+import nli_service
+from nli_service import NLIService
 from evidence_scraper import EvidenceResult, stance_summary
 
 
@@ -22,13 +23,14 @@ class FixedPipeline:
 
 class EvidenceAssessmentTests(unittest.TestCase):
     def setUp(self):
-        self.previous_scorer = evidence_scraper._nli_scorer
-        evidence_scraper._nli_scorer = NLIScorer(
+        """Replace the NLI service singleton with a test double."""
+        self._original = nli_service._instance
+        nli_service._instance = NLIService(
             pipeline_factory=lambda *_args, **_kwargs: FixedPipeline()
         )
 
     def tearDown(self):
-        evidence_scraper._nli_scorer = self.previous_scorer
+        nli_service._instance = self._original
 
     def test_nli_evidence_is_ranked_above_unclassified_relevance(self):
         documents = [
@@ -57,7 +59,7 @@ class EvidenceAssessmentTests(unittest.TestCase):
         self.assertEqual(summary["status"], "insufficient_evidence")
 
     def test_unavailable_nli_cannot_create_a_verdict(self):
-        evidence_scraper._nli_scorer = NLIScorer(
+        nli_service._instance = NLIService(
             pipeline_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline"))
         )
         results = evidence_scraper.rank_by_similarity(

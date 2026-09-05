@@ -6,7 +6,8 @@ SERVICE_DIR = Path(__file__).resolve().parents[1]
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
-from claim_verifier import NLIScorer, classify_source, extract_claims
+from nli_service import NLIService
+from claim_verifier import classify_source, extract_claims
 
 
 class FakePipeline:
@@ -42,7 +43,7 @@ class ClaimVerifierTests(unittest.TestCase):
         self.assertEqual(classify_source("https://example.net/story").weight, 0.0)
 
     def test_nli_uses_entailment_and_contradiction_labels(self):
-        scorer = NLIScorer(pipeline_factory=lambda *_args, **_kwargs: FakePipeline())
+        scorer = NLIService(pipeline_factory=lambda *_args, **_kwargs: FakePipeline())
         scores = scorer.score_many(
             "Inflation increased.",
             ["Inflation increased last month.", "Inflation fell last month."],
@@ -55,7 +56,7 @@ class ClaimVerifierTests(unittest.TestCase):
         def failing_factory(*_args, **_kwargs):
             raise RuntimeError("offline")
 
-        scores = NLIScorer(pipeline_factory=failing_factory).score_many(
+        scores = NLIService(pipeline_factory=failing_factory).score_many(
             "A claim", ["A passage with enough words for the check."]
         )
         self.assertFalse(scores[0]["available"])
