@@ -1,4 +1,11 @@
-"""Small, deterministic verification layer for claims with unambiguous answers."""
+"""Small, deterministic verification layer for claims with unambiguous answers.
+
+This layer returns "very high" confidence and skips evidence retrieval
+entirely, so a false positive here is the most confidently wrong output the
+system can produce. It therefore fires only on plain, unqualified statements:
+anything that negates, quotes, denies or comments on the proposition it
+contains is handed to the evidence pipeline instead.
+"""
 
 from __future__ import annotations
 
@@ -46,6 +53,27 @@ FALSE_PATTERNS = (
 # phrase classified "the best-selling car in 2024 was the Model Y" — a fact
 # about sales figures — as a value judgment. This mirrors the same rule in
 # claim_triage._OPINION_MARKERS; both run, so both had to be fixed.
+# Frames that change what a sentence asserts relative to the proposition
+# inside it. The pattern tables below match substrings, so without this check
+# they fired on the embedded proposition and ignored the sentence around it:
+#
+#   "It is false that a triangle has four sides"  ->  verdict "false"
+#       (the statement is TRUE — it correctly denies the four-sided triangle)
+#   "Nobody claims world war ii ended in 1945"    ->  verdict "true"
+#       (the statement is FALSE — people do claim that)
+#
+# Detecting the frame is enough; resolving what it means is the evidence
+# pipeline's job, so a match here simply declines to answer deterministically.
+_QUALIFYING_FRAME = re.compile(
+    r"\b(?:not|never|no one|nobody|none|isn't|is not|aren't|are not|"
+    r"wasn't|was not|doesn't|does not|don't|do not|didn't|did not|"
+    r"false that|untrue that|myth|mythical|hoax|debunk\w*|disproven|"
+    r"disproved|refut\w*|contrary to|contrary|allegedly|supposedly|"
+    r"claims? that|claimed that|believe[sd]? that|some say|it is said|"
+    r"used to|no longer|incorrect\w*|wrongly)\b",
+    re.IGNORECASE,
+)
+
 SUBJECTIVE_PATTERN = re.compile(
     r"\b(?:is|are|was|were)\s+(?:the\s+(?:best|worst|greatest)\b(?!-|\s*(?:selling|"
     r"known|paid|performing|rated|documented|recorded|attended))"
@@ -86,6 +114,12 @@ def _safe_arithmetic(expression: str) -> float | None:
 def assess_claim(statement: str) -> dict | None:
     """Return a high-confidence assessment only when a safe rule applies."""
     normalized = _normalise(statement)
+
+    # A qualified statement is not the proposition it contains. Decline and
+    # let the evidence pipeline handle it rather than answering the wrong
+    # question with very high confidence.
+    if _QUALIFYING_FRAME.search(normalized):
+        return None
 
     for pattern, claim_type, reasoning in TRUE_PATTERNS:
         if re.search(pattern, normalized):

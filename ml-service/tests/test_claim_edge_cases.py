@@ -489,3 +489,62 @@ class TestKnowledgeVerifierTraps(unittest.TestCase):
         result = assess_claim("Pizza is the best food in the world")
         self.assertIsNotNone(result)
         self.assertEqual(result["status"], "not_objectively_verifiable")
+
+
+# ── 8. The deterministic layer must not answer the wrong question ────
+class TestDeterministicLayerQualifiers(unittest.TestCase):
+    """This layer returns "very high" confidence and skips evidence entirely.
+
+    Its pattern tables match substrings, so a sentence that *negates* or
+    *comments on* a known proposition matched the proposition and ignored the
+    frame around it. That produces the most confidently wrong output the
+    system can emit — no search, no NLI, no way for anything downstream to
+    correct it.
+    """
+
+    def assess(self, statement):
+        from knowledge_verifier import assess_claim
+        return assess_claim(statement)
+
+    def test_a_denial_of_a_known_falsehood_is_not_itself_false(self):
+        """"It is false that a triangle has four sides" is a TRUE statement."""
+        self.assertIsNone(self.assess("It is false that a triangle has four sides"))
+
+    def test_a_denial_of_a_known_fact_is_not_itself_true(self):
+        """"Nobody claims WWII ended in 1945" is a FALSE statement."""
+        self.assertIsNone(self.assess("Nobody claims world war ii ended in 1945"))
+
+    def test_commentary_frames_are_declined(self):
+        for statement in (
+            "The sun revolves around the earth, a belief long since disproven",
+            "A triangle has four sides according to the debunked claim",
+            "It is a myth that the Great Wall of China is visible from the Moon",
+            "Water does not freeze at 0°C at sea level",
+        ):
+            with self.subTest(statement=statement):
+                self.assertIsNone(self.assess(statement))
+
+    def test_plain_statements_are_still_answered(self):
+        for statement, verdict in (
+            ("Water freezes at 0°C at sea level", "true"),
+            ("A triangle has four sides", "false"),
+            ("World War II ended in 1945", "true"),
+            ("2 + 2 = 5", "false"),
+            ("2 + 2 = 4", "true"),
+        ):
+            with self.subTest(statement=statement):
+                result = self.assess(statement)
+                self.assertIsNotNone(result, f"{statement} should still be answered")
+                self.assertEqual(result["verdict"], verdict)
+
+    def test_a_declined_claim_falls_through_to_the_evidence_pipeline(self):
+        """Declining must mean "search this", not "no verdict"."""
+        from claim_triage import triage_claim
+        triage = triage_claim("It is false that a triangle has four sides")
+        self.assertTrue(triage.search_worthwhile)
+
+    def test_arithmetic_cannot_hang_the_request(self):
+        """Huge exponents overflow in float rather than computing a bignum."""
+        from knowledge_verifier import _safe_arithmetic
+        self.assertIsNone(_safe_arithmetic("9 ** 9 ** 9"))
+        self.assertIsNone(_safe_arithmetic("2 ** 200000"))
