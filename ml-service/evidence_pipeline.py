@@ -72,6 +72,13 @@ DEFAULT_BUDGET_SECONDS = 45.0
 # Share of the budget retrieval may consume before article extraction starts.
 _SEARCH_BUDGET_SHARE = 0.5
 
+# Below this many words, a candidate's text is a headline and a sentence or
+# two, and the page is fetched for the real body. It was 30, which sat just
+# under the ~31-word excerpt the news APIs return — so the best-quality
+# providers were the ones whose articles were never fetched, and NLI judged
+# them on a two-line stub. Judging a claim needs a paragraph or two.
+MIN_WORDS_WITHOUT_FETCH = 120
+
 
 def run_pipeline(
     claim: str,
@@ -160,7 +167,7 @@ def run_pipeline(
     if fetch_articles:
         needs_fetch = [
             d for d in selected
-            if len((d.get("text") or "").split()) < 30
+            if len((d.get("text") or "").split()) < MIN_WORDS_WITHOUT_FETCH
         ]
         if needs_fetch and time.monotonic() < deadline:
             with ThreadPoolExecutor(max_workers=8) as pool:
