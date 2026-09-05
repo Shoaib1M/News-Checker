@@ -197,7 +197,10 @@ def run_pipeline(
             title = fetched_title
 
         # ── Stage 5: NLI classification ──────────────────────────────
-        passages = extract_passages(title, snippet, full_text)
+        # The claim steers passage selection: NLI only sees what this
+        # returns, so the sentences that mention the claim's subject matter
+        # must not be crowded out by the article's opening paragraphs.
+        passages = extract_passages(title, snippet, full_text, claim=claim)
         support_score = 0.0
         contradiction_score = 0.0
         best_sentence = ""
