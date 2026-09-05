@@ -100,7 +100,7 @@ class NLIService:
         Injected factory for testing (replaces ``transformers.pipeline``).
     model_name : str, optional
         HuggingFace model identifier.  Defaults to the ``NLI_MODEL``
-        environment variable or ``cross-encoder/nli-MiniLM2-L6-H768``.
+        environment variable or ``cross-encoder/nli-deberta-v3-small``.
     """
 
     # Valid states
@@ -115,7 +115,7 @@ class NLIService:
         model_name: str | None = None,
     ):
         self.model_name: str = model_name or os.getenv(
-            "NLI_MODEL", "cross-encoder/nli-MiniLM2-L6-H768"
+            "NLI_MODEL", "cross-encoder/nli-deberta-v3-small"
         )
         self._pipeline_factory = pipeline_factory
         self._pipeline = None

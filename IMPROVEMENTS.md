@@ -348,3 +348,29 @@ of weights alone in fp32) plus PyTorch's baseline overhead does not fit on a
 - Added tests covering: named labels resolve correctly regardless of model
   identity or output order; an unlisted model emitting raw `LABEL_N` fails
   safe (`available: False`, service status `failed`) instead of guessing.
+
+## 2026-09-05 (follow-up 2): dropped always-on hosting, reverted NLI model
+
+The MiniLM swap didn't stop the Render OOM restarts — the free-tier instance
+(512MB) is undersized for a PyTorch + transformers service regardless of
+which specific NLI model is loaded (PyTorch's own import footprint alone
+typically runs 300–500MB, before any model weights). Rather than keep
+shrinking the model (and its accuracy) to chase a free-tier memory ceiling,
+or pay for a bigger always-on instance for what's fundamentally a portfolio/
+interview project, the decision was made to **stop deploying an always-on
+public instance** and demo the project locally instead — a live link that
+occasionally cold-starts or mid-restarts reads worse in an interview than
+no live link at all.
+
+- `NLI_MODEL` default reverted to `cross-encoder/nli-deberta-v3-small` (the
+  original, more accurate model) in both `Dockerfile` and `nli_service.py`'s
+  fallback — local dev machines have several GB of headroom, so the memory
+  constraint that motivated the smaller model no longer applies.
+  `cross-encoder/nli-MiniLM2-L6-H768` remains documented as the option to
+  fall back to if this is ever deployed on a small instance again — both
+  are pre-verified in `nli_service.py`'s label-order table, so switching
+  either direction is safe.
+- README's Deployment section reframed: "Running this for a demo" now leads
+  with local usage and explains why; the Render/Vercel instructions are kept
+  as optional reference material under a collapsed `<details>` block, not
+  presented as the project's actual current hosting.

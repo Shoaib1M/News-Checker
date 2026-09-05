@@ -25,9 +25,7 @@ This is a full-stack, three-service application: a React frontend, a Node/Expres
 - [Environment variables](#environment-variables)
 - [Local development](#local-development)
 - [Testing](#testing)
-- [Deployment](#deployment)
-  - [ML service → Render](#ml-service--render)
-  - [Client + server → Vercel](#client--server--vercel)
+- [Running this for a demo](#running-this-for-a-demo)
   - [NLI model & memory](#nli-model--memory)
 - [Model performance (legacy MLP)](#model-performance-legacy-mlp)
 - [Project structure](#project-structure)
@@ -59,9 +57,9 @@ The one thing this system is deliberately built **not** to do: treat "a search r
 | **Model Evaluation** — honest, non-inflated legacy-MLP metrics | **Model Comparison** — why the legacy model stays auxiliary |
 | ![Evaluation](docs/screenshots/04-evaluation.png) | ![Comparison](docs/screenshots/05-comparison.png) |
 
-<!-- TODO(you): add a screenshot of your actual live production deployment here (Render + Vercel URLs), e.g.:
-<p align="center"><img src="docs/screenshots/06-production.png" alt="Live production deployment" width="800"></p>
--->
+<!-- This project runs locally for demos rather than staying deployed — see
+"Running this for a demo" below for why. If you do stand up a public
+deployment later, drop a screenshot of it here. -->
 
 ## Architecture
 
@@ -139,7 +137,7 @@ These are the non-negotiable rules the codebase is built around — they were th
 | **Legacy ML** | From-scratch NumPy MLP + TF-IDF vectorizer (no sklearn/PyTorch) — auxiliary signal only |
 | **Search providers** | GNews, The Guardian, NewsAPI (all optional, key-gated), DuckDuckGo HTML (always-on fallback, no key needed) |
 | **Database** | MongoDB (Atlas or self-hosted) via Mongoose |
-| **Deployment** | ML service on Render (Docker); client + server on Vercel |
+| **Deployment** | Run locally for demos (see [Running this for a demo](#running-this-for-a-demo)); Render + Vercel configs included for reference |
 
 ## API reference
 
@@ -250,7 +248,7 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
   "threshold": 0.49,
   "nli": {
     "enabled": true,
-    "model": "cross-encoder/nli-MiniLM2-L6-H768",
+    "model": "cross-encoder/nli-deberta-v3-small",
     "status": "ready",
     "error": null
   },
@@ -314,18 +312,18 @@ All served by `server/` (Express), all under `/api`:
 
 ## Environment variables
 
-### ML service (`ml-service/` — deployed on Render)
+### ML service (`ml-service/` — Render-specific vars matter only if you deploy it)
 
 | Variable | Required? | Default | Notes |
 |---|---|---|---|
 | `NLI_ENABLED` | No | `true` | Set `false` only to intentionally disable NLI (e.g. emergency memory mitigation). |
-| `NLI_MODEL` | No | `cross-encoder/nli-MiniLM2-L6-H768` | HuggingFace model id. See [NLI model & memory](#nli-model--memory) before changing this. |
+| `NLI_MODEL` | No | `cross-encoder/nli-deberta-v3-small` | HuggingFace model id. See [NLI model & memory](#nli-model--memory) before changing this. |
 | `GNEWS_API_KEY` | No | — | Enables the GNews provider. Without it, only DuckDuckGo runs. |
 | `GUARDIAN_API_KEY` | No | — | Enables The Guardian provider. |
 | `NEWSAPI_KEY` | No | — | Enables the NewsAPI provider. |
 | `PORT` | No | `8000` | Set automatically by Render; the Dockerfile's `CMD` already handles `${PORT:-8000}`. |
 
-### Server (`server/` — deployed on Vercel, or any Node host)
+### Server (`server/` — Vercel-specific vars matter only if you deploy it)
 
 | Variable | Required? | Default | Notes |
 |---|---|---|---|
@@ -387,21 +385,32 @@ npm run build
 
 There is currently no automated test suite for `server/` (the Express layer) — this is a known gap, not an oversight; see [Known limitations](#known-limitations).
 
-## Deployment
+## Running this for a demo
+
+**This project is run locally, not deployed to an always-on public host.** Real NLI inference (a transformer model, PyTorch) is expensive to host reliably on free-tier infrastructure — a small instance either can't fit the model in memory or has to compromise on accuracy to fit, and it sleeps/cold-starts when idle. A live link that occasionally shows a mid-restart or a 60-second cold start makes the project look worse than not having one.
+
+For a demo (an interview, a walkthrough), run all three services locally per [Local development](#local-development) — on a normal dev machine there's several GB of headroom, so the full-accuracy NLI model runs comfortably. This also means you're demoing from an environment you control, with no cold-start or infra surprises mid-conversation.
+
+The deployment instructions below are kept for reference (e.g. if you want a permanent public link and are fine with the hosting cost that requires), not because the project currently runs on them.
+
+<details>
+<summary>Deployment instructions (optional — not currently in use)</summary>
 
 ### ML service → Render
 
-The Dockerfile is self-contained (CPU-only PyTorch wheel, single Uvicorn worker, conservative thread limits). Point a Render Web Service at `ml-service/` with the Dockerfile build. See [Environment variables](#environment-variables) above for what to set.
+The Dockerfile is self-contained (CPU-only PyTorch wheel, single Uvicorn worker, conservative thread limits). Point a Render Web Service at `ml-service/` with the Dockerfile build. See [Environment variables](#environment-variables) above for what to set. **Use at least a 2GB-RAM instance** — see [NLI model & memory](#nli-model--memory) below for why.
 
 ### Client + server → Vercel
 
 The root `vercel.json` builds `client/` as a static site and `server/api/index.js` as a serverless function, with `/api/*` rewritten to the server — meaning client and server are typically **one Vercel project**, same origin, so `VITE_API_URL` can usually stay unset. `server/vercel.json` exists separately if you want to deploy the server as its own project instead (in which case you do need `VITE_API_URL` and `CLIENT_URL`).
 
+</details>
+
 ### NLI model & memory
 
-`NLI_MODEL` defaults to `cross-encoder/nli-MiniLM2-L6-H768` (~22M parameters). An earlier default, `cross-encoder/nli-deberta-v3-small` (~141M parameters, ~560MB of fp32 weights alone), reliably exceeded a 512MB Render instance and triggered OOM restarts — that's why the default changed.
+`NLI_MODEL` defaults to `cross-encoder/nli-deberta-v3-small` (~141M parameters, ~560MB of fp32 weights) for its stronger entailment/contradiction accuracy — the right default for local use, where memory isn't the constraint.
 
-If you have a larger instance and want the bigger model's higher accuracy, set `NLI_MODEL=cross-encoder/nli-deberta-v3-small` (or `-base`, `-xsmall`) — these three are pre-verified in `nli_service.py`'s label-order table. **If you set a different model entirely**, verify it after deploying:
+If you do deploy this on a small always-on instance (512MB), that model reliably triggers OOM restarts — PyTorch's own import footprint (300–500MB, independent of model choice) plus the model weights adds up fast. In that case, set `NLI_MODEL=cross-encoder/nli-MiniLM2-L6-H768` (~22M parameters, ~6x smaller) instead, and budget for the instance to need 1GB+ regardless of model choice. `-deberta-v3-small`, `-deberta-v3-base`, `-deberta-v3-xsmall`, and `-MiniLM2-L6-H768` are all pre-verified in `nli_service.py`'s label-order table. **If you set a different model entirely**, verify it after deploying:
 
 1. Check `/api/health` → `nli.status` should be `"ready"`.
 2. Check the service logs for a line like `NLI model loaded: <model> — id2label={...}` to confirm what label scheme it actually uses.
