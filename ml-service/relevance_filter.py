@@ -264,7 +264,9 @@ class RelevanceFilter:
     _ENTITY_VARIANTS: dict[str, list[tuple[str, bool]]] = {
         "united states": [
             (r"\bunited states\b", False),
-            (r"\bamericans?\b", False),
+            # The noun AND its demonym: "America", "Americas", "American",
+            # "Americans". Writing only the demonym form drops the noun.
+            (r"\bamerica(?:ns?|s)?\b", False),
             (r"\b(?:U\.?S\.?A?\.?|USA)\b", True),
         ],
         "united kingdom": [
