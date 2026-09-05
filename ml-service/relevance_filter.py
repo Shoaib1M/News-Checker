@@ -55,6 +55,20 @@ class RelevanceFilter:
     
     # Calibrated thresholds: reject collisions, but retain genuinely topical
     # reporting for claims whose wording differs from the article wording.
+    #
+    # MEASURED, not guessed — see tests/test_relevance_corpus.py, which scores
+    # these against twenty hand-labelled (claim, document) pairs:
+    #
+    #     0.30-0.48   precision 0.91   recall 1.00   F1 0.95
+    #     0.50+       precision 1.00   recall 0.80   F1 0.89
+    #
+    # STRICT_MIN_RELEVANCE sits mid-plateau. Do not raise it to chase that
+    # last point of precision: the costs are not symmetric. A document
+    # rejected here is gone, and for a high-salience claim enough wrong
+    # rejections become "no credible source reports this" — a statement about
+    # the world. A document let through still has to be NLI-classified before
+    # it counts, and if it says nothing it is shown as "Related coverage"
+    # rather than counted as evidence.
     MIN_ENTITY_MATCH = 0.20  # At least 20% of entities must match
     MIN_OVERALL_RELEVANCE = 0.30
     STRICT_MIN_RELEVANCE = 0.42
@@ -208,19 +222,74 @@ class RelevanceFilter:
     # country gave a personal blog post headlined "Google blocked our account
     # and never told us why" a perfect entity match for a claim about the
     # United States, admitted as evidence under "Key entities mentioned".
+    # Countries whose adjectival form is not the name plus a suffix. Headlines
+    # use these constantly — "Indian PM", "Chinese regulators", "British
+    # officials" — and a plain word-boundary match on the country name rejects
+    # every one of them. "Indian PM steps down amid political turmoil" scored
+    # ZERO entity match for a claim about India's prime minister resigning,
+    # and was filtered out despite being exactly the right article.
+    _DEMONYMS: dict[str, tuple[str, ...]] = {
+        "china": ("chinese",),
+        "britain": ("british", "briton", "britons"),
+        "france": ("french",),
+        "japan": ("japanese",),
+        "spain": ("spanish", "spaniard"),
+        "germany": ("german", "germans"),
+        "poland": ("polish", "pole", "poles"),
+        "turkey": ("turkish", "turk", "turks"),
+        "israel": ("israeli", "israelis"),
+        "netherlands": ("dutch",),
+        "sweden": ("swedish", "swede", "swedes"),
+        "denmark": ("danish", "dane", "danes"),
+        "scotland": ("scottish", "scots"),
+        "ireland": ("irish",),
+        "wales": ("welsh",),
+        "greece": ("greek", "greeks"),
+        "norway": ("norwegian", "norwegians"),
+        "finland": ("finnish", "finn", "finns"),
+        "switzerland": ("swiss",),
+        "portugal": ("portuguese",),
+        "thailand": ("thai",),
+        "vietnam": ("vietnamese",),
+        "philippines": ("filipino", "filipinos", "philippine"),
+    }
+
+    # Regular adjectival and plural endings, which cover the rest:
+    # India/Indian, America/American, Russia/Russian, Ukraine/Ukrainian.
+    # Applied only to entities long enough that a suffix cannot turn one
+    # short name into an unrelated word.
+    _REGULAR_SUFFIXES = r"(?:n|ns|an|ans|ian|ians|s)?"
+    _MIN_LENGTH_FOR_SUFFIX = 4
+
     _ENTITY_VARIANTS: dict[str, list[tuple[str, bool]]] = {
         "united states": [
             (r"\bunited states\b", False),
-            (r"\bamerica\b", False),
+            (r"\bamericans?\b", False),
             (r"\b(?:U\.?S\.?A?\.?|USA)\b", True),
         ],
         "united kingdom": [
             (r"\bunited kingdom\b", False),
             (r"\bbritain\b", False),
+            (r"\bbritish\b", False),
             (r"\b(?:U\.?K\.?)\b", True),
         ],
         "the great wall": [(r"\bgreat wall\b", False)],
     }
+
+    def _default_probes(self, entity: str) -> List[tuple[str, bool]]:
+        """Patterns that count as a mention of ``entity``.
+
+        The name itself, its irregular demonyms, and — for names long enough
+        to be unambiguous — a regular adjectival or plural ending.
+        """
+        probes: List[tuple[str, bool]] = []
+        if len(entity) >= self._MIN_LENGTH_FOR_SUFFIX and " " not in entity:
+            probes.append((rf"\b{re.escape(entity)}{self._REGULAR_SUFFIXES}\b", False))
+        else:
+            probes.append((rf"\b{re.escape(entity)}\b", False))
+        for demonym in self._DEMONYMS.get(entity, ()):
+            probes.append((rf"\b{re.escape(demonym)}\b", False))
+        return probes
 
     def _score_entity_match(self, decomp: ClaimDecomposition, document_text: str) -> float:
         """Score how many of the claim's entities actually appear in the document.
@@ -242,9 +311,7 @@ class RelevanceFilter:
         claim_entities = {e.lower() for e in decomp.primary_entities}
         matched = set()
         for entity in claim_entities:
-            probes = self._ENTITY_VARIANTS.get(
-                entity, [(rf"\b{re.escape(entity)}\b", False)]
-            )
+            probes = self._ENTITY_VARIANTS.get(entity) or self._default_probes(entity)
             for pattern, case_sensitive in probes:
                 flags = 0 if case_sensitive else re.IGNORECASE
                 if re.search(pattern, document_text, flags):
