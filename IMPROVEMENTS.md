@@ -440,3 +440,34 @@ completes. The service looked hung; it was downloading.
 - A failed preload is non-fatal: the service still starts, still answers
   deterministic claims, and `/api/health` reports the exact error — verified
   by starting with `transformers` absent.
+
+## 2026-09-05 (follow-up 5): the actual cause — Express was calling a dead upstream
+
+The 502 finally gave it away. `server/routes/check.js` reads `FASTAPI_URL`
+from the environment and **never logged it**, so when a stale
+`server/.env` still pointed at the decommissioned Render deployment, every
+check went there, got Render's `502` with an empty body, and the local
+ml-service sat idle logging nothing — which looks identical to a broken
+local service. That is why the ml-service terminal stayed silent through
+every test: it was never receiving requests.
+
+Reproduced exactly by pointing `FASTAPI_URL` at a server returning an empty
+502: `FastAPI error: 502 ... (empty body)`, matching the reported log
+character for character.
+
+- Express now prints `Forwarding /api/check to <url> (from FASTAPI_URL|default)`
+  at startup, and warns when that URL is remote while ml-service is expected
+  locally.
+- `/api/health` on the proxy now reports `mlService`, so a healthy proxy can
+  no longer hide a misrouted one.
+- The upstream error log names the URL and status; outside production the
+  JSON response carries `upstream` and `upstreamStatus` too. "ML service
+  error." alone sends you debugging the wrong process.
+
+Also corrected `_KNOWN_INDEXED_LABEL_ORDERS`, using ground truth from the
+model's own config now visible in the startup log
+(`id2label={0: 'contradiction', 1: 'entailment', 2: 'neutral'}`). The table
+previously had 1 and 2 swapped. It never produced a wrong verdict — these
+models ship real label names, so the substring path wins — but a guessed
+order that silently inverts entailment and neutral is precisely the failure
+that table exists to prevent.

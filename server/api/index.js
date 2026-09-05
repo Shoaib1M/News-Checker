@@ -90,7 +90,15 @@ WHY THIS EXISTS:
 Used by hosting providers (and developers) to verify the server is up and didn't crash.
 */
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", service: "express-proxy" });
+  // Report which ml-service this proxy actually talks to. Without it, a
+  // healthy-looking proxy tells you nothing about whether checks can work:
+  // a stale FASTAPI_URL pointing at a decommissioned deployment looks
+  // identical here to a correctly wired local one.
+  res.json({
+    status: "ok",
+    service: "express-proxy",
+    mlService: process.env.FASTAPI_URL || "http://localhost:8000",
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -100,6 +108,29 @@ app.get("/api/health", (_req, res) => {
 // Get the MongoDB connection string.
 // If not provided in .env, default to a local MongoDB instance.
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/newschecker";
+
+/*
+PURPOSE:
+Print which ML service this proxy will forward /api/check to.
+
+WHY THIS EXISTS:
+FASTAPI_URL is read silently from the environment. When it points somewhere
+stale — a decommissioned deployment, say — every check fails upstream while
+the local ml-service sits idle and logs nothing, which looks exactly like a
+broken local service. Printing the target at boot makes that immediately
+obvious instead of invisible.
+*/
+function logMlServiceTarget() {
+  const target = process.env.FASTAPI_URL || "http://localhost:8000";
+  const source = process.env.FASTAPI_URL ? "FASTAPI_URL" : "default";
+  console.log(`Forwarding /api/check to ${target} (from ${source})`);
+  if (process.env.FASTAPI_URL && !/localhost|127\.0\.0\.1/.test(process.env.FASTAPI_URL)) {
+    console.warn(
+      `  ⚠  That is a remote URL. If you are running ml-service locally, ` +
+      `unset FASTAPI_URL in server/.env (or set it to http://localhost:8000).`,
+    );
+  }
+}
 
 /*
 PURPOSE:
@@ -118,6 +149,7 @@ mongoose
     // Step 2: Start the web server
     app.listen(PORT, () => {
       console.log(`Express server running on http://localhost:${PORT}`);
+      logMlServiceTarget();
     });
   })
   .catch((error) => {
@@ -127,6 +159,7 @@ mongoose
     // Step 2: Start anyway so health checks work during development without MongoDB
     app.listen(PORT, () => {
       console.log(`Express server running on http://localhost:${PORT} (no database)`);
+      logMlServiceTarget();
     });
   });
 

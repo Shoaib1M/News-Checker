@@ -91,9 +91,24 @@ router.post("/", optionalAuth, async (req, res) => {
     // Step 3: Handle potential errors from the Python service
     if (!mlResponse.ok) {
       const errorText = await mlResponse.text();
-      console.error("FastAPI error:", mlResponse.status, errorText);
-      // 502 Bad Gateway means our server (Node) couldn't get a valid response from the upstream server (Python)
-      return res.status(502).json({ error: "ML service error.", details: errorText });
+      // Log the URL, not just the status. A bare "FastAPI error: 502" gives
+      // no way to tell a broken local service apart from FASTAPI_URL still
+      // pointing at a decommissioned remote one — which returns exactly
+      // that, while the local ml-service sits idle and logs nothing.
+      console.error(
+        `FastAPI error: ${mlResponse.status} from ${FASTAPI_URL}/api/check`,
+        errorText ? `— ${errorText.slice(0, 500)}` : "(empty body)",
+      );
+      // 502 Bad Gateway means our server (Node) couldn't get a valid response from the upstream server (Python).
+      // Outside production, name the upstream that failed: "ML service
+      // error." alone sends you debugging the wrong process.
+      return res.status(502).json({
+        error: "ML service error.",
+        details: errorText,
+        ...(process.env.NODE_ENV === "production"
+          ? {}
+          : { upstream: `${FASTAPI_URL}/api/check`, upstreamStatus: mlResponse.status }),
+      });
     }
 
     // Step 4: Parse the JSON response from Python
