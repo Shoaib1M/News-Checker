@@ -95,7 +95,7 @@ class RelevanceFilter:
         doc_keywords = self._extract_keywords(doc_combined)
         
         # Assess each dimension
-        entity_match = self._score_entity_match(decomp, doc_entities)
+        entity_match = self._score_entity_match(decomp, doc_combined)
         predicate_match = self._score_predicate_match(decomp, doc_keywords)
         semantic_coherence = self._score_semantic_coherence(decomp, doc_entities, doc_keywords)
         keyword_specificity = self._score_keyword_specificity(claim, decomp, doc_combined)
@@ -173,11 +173,27 @@ class RelevanceFilter:
                 entities.add(entity.lower())
 
         lowered = title_text.lower()
-        for phrase in ("united states", "the united states", "us", "usa",
-                       "great wall", "china", "india", "nasa", "earth"):
+        # Multi-word names the capitalized-phrase regex above can miss when a
+        # publisher lowercases its headlines. These are unambiguous, so a
+        # case-insensitive match is safe.
+        for phrase in ("united states", "united kingdom", "great wall",
+                       "china", "india", "nasa", "earth"):
             if re.search(rf"\b{re.escape(phrase)}\b", lowered):
                 entities.add(phrase)
-        
+
+        # Country abbreviations are matched CASE-SENSITIVELY, against the
+        # original text. "us" lowercased is the pronoun, and it appears in
+        # most English prose: a personal blog post headlined "Google blocked
+        # our account and never told us why" scored a perfect entity match
+        # for a claim about the United States banning Google, and was
+        # admitted as evidence with the reason "Key entities mentioned".
+        for pattern, canonical in (
+            (r"\b(?:U\.?S\.?A?\.?|USA)\b", "united states"),
+            (r"\b(?:U\.?K\.?)\b", "united kingdom"),
+        ):
+            if re.search(pattern, title_text):
+                entities.add(canonical)
+
         return entities
     
     def _extract_keywords(self, text: str) -> Set[str]:
@@ -185,30 +201,56 @@ class RelevanceFilter:
         words = re.findall(r'\b([a-z]+(?:[a-z\-]*[a-z])?)\b', text.lower())
         return {w for w in words if len(w) > 2 and w not in self.STOPWORDS}
     
-    def _score_entity_match(self, decomp: ClaimDecomposition, doc_entities: Set[str]) -> float:
-        """
-        Score how many entities from the claim appear in the document.
-        
-        Returns 0.0-1.0 where 1.0 means all key entities appear.
+    # Alternative surface forms for entities that are commonly abbreviated.
+    # Each is (pattern, case_sensitive). Country abbreviations are matched
+    # case-sensitively against the original text: lowercase "us" is the
+    # pronoun and appears in most English prose, so treating it as the
+    # country gave a personal blog post headlined "Google blocked our account
+    # and never told us why" a perfect entity match for a claim about the
+    # United States, admitted as evidence under "Key entities mentioned".
+    _ENTITY_VARIANTS: dict[str, list[tuple[str, bool]]] = {
+        "united states": [
+            (r"\bunited states\b", False),
+            (r"\bamerica\b", False),
+            (r"\b(?:U\.?S\.?A?\.?|USA)\b", True),
+        ],
+        "united kingdom": [
+            (r"\bunited kingdom\b", False),
+            (r"\bbritain\b", False),
+            (r"\b(?:U\.?K\.?)\b", True),
+        ],
+        "the great wall": [(r"\bgreat wall\b", False)],
+    }
+
+    def _score_entity_match(self, decomp: ClaimDecomposition, document_text: str) -> float:
+        """Score how many of the claim's entities actually appear in the document.
+
+        Searches the document text for each claim entity directly, rather
+        than extracting the document's own entities and intersecting the two
+        sets. That older design failed in both directions, because the two
+        extractors did not know the same things: the claim side recognises
+        lowercase organisation names ("google"), the document side did not,
+        so an all-lowercase headline about Google never matched a Google
+        claim — while the document side recognised bare "us", which the claim
+        side meant as a country and the document meant as a pronoun.
+
+        Returns 0.0-1.0 where 1.0 means every key entity appears.
         """
         if not decomp.primary_entities:
             return 0.5  # Neutral for non-entity claims
-        
+
         claim_entities = {e.lower() for e in decomp.primary_entities}
         matched = set()
         for entity in claim_entities:
-            variants = {entity}
-            if entity == "united states":
-                variants.update({"us", "usa", "america", "united states"})
-            if entity == "the great wall":
-                variants.add("great wall")
-            if any(
-                variant in candidate or candidate in variant
-                for variant in variants
-                for candidate in doc_entities
-            ):
-                matched.add(entity)
-        
+            probes = self._ENTITY_VARIANTS.get(
+                entity, [(rf"\b{re.escape(entity)}\b", False)]
+            )
+            for pattern, case_sensitive in probes:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                if re.search(pattern, document_text, flags):
+                    matched.add(entity)
+                    break
+
         return len(matched) / len(claim_entities)
     
     def _entity_tokens(self, decomp: ClaimDecomposition) -> Set[str]:

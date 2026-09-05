@@ -111,6 +111,12 @@ def extract_entities(text: str) -> List[str]:
                 normalized = match[0].capitalize()
             else:
                 normalized = ' '.join(word.capitalize() for word in match.split())
+            # "US"/"USA" is the same entity as "United States". Left distinct,
+            # a claim written "US bans Google" produced the entity "Us", which
+            # the relevance filter then searched for case-insensitively and
+            # matched against the English pronoun.
+            if normalized.lower() in {"us", "usa"}:
+                normalized = "United States"
             if (
                 len(normalized) > 2
                 and normalized.lower() not in {"c", "the", "a", "an"}
