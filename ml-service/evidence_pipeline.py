@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+import re
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -78,6 +79,34 @@ _SEARCH_BUDGET_SHARE = 0.5
 # providers were the ones whose articles were never fetched, and NLI judged
 # them on a two-line stub. Judging a claim needs a paragraph or two.
 MIN_WORDS_WITHOUT_FETCH = 120
+
+# A passage must reach this entailment/contradiction score before it counts as
+# taking a side at all.
+STANCE_THRESHOLD = 0.35
+
+# When BOTH directions clear that threshold, the document argues both ways.
+# One side must be this many times stronger to be called the document's
+# position; otherwise the honest label is "unclear". Without it, 0.88 against
+# 0.72 read as a confident "supports".
+STANCE_DOMINANCE = 1.6
+
+# Passages that REPORT a claim rather than assert it. Debunking articles are
+# built out of these — "Posts claim the US banned Google in all its cities" —
+# and an NLI model scores them as strongly entailing the claim, because the
+# claim is right there in the sentence. Nothing in the passage says it is
+# true; the article exists to say the opposite.
+#
+# Deliberately narrow: it matches the frames misinformation coverage uses, not
+# ordinary attribution. "Officials said the minister resigned" is a newspaper
+# reporting a fact and must keep counting as evidence.
+_CLAIM_REPORTING_FRAME = re.compile(
+    r"\b(?:posts?|users?|rumou?rs?|memes?|videos?|tweets?)\s+(?:that\s+)?"
+    r"(?:claim|claims|claimed|allege|alleges|alleged|say|says|said|suggest)\b"
+    r"|\b(?:social media|viral|circulating|widely shared|misleading|"
+    r"unfounded|baseless|debunk\w*|fact[- ]check\w*|false claim)\b"
+    r"|\bclaims?\s+(?:that\s+)?(?:have|has)\s+(?:been\s+)?circulat",
+    re.IGNORECASE,
+)
 
 
 def run_pipeline(
@@ -217,23 +246,60 @@ def run_pipeline(
             nli_scores = nli_service.score_many(claim, passages)
             if nli_scores and nli_scores[0].get("available"):
                 nli_available = True
-                best_idx = 0
-                best_strength = 0.0
-                for i, score in enumerate(nli_scores):
-                    strength = max(score["entailment"], score["contradiction"])
-                    if strength > best_strength:
-                        best_strength = strength
-                        best_idx = i
-                best = nli_scores[best_idx]
-                support_score = best["entailment"]
-                contradiction_score = best["contradiction"]
+                # The strongest entailment and the strongest contradiction are
+                # taken INDEPENDENTLY, across all passages.
+                #
+                # Reading both scores off whichever single passage had the
+                # highest max inverted fact-checks. A debunking article quotes
+                # the claim it is refuting — "Posts claim the US banned Google
+                # in all its cities" entails at 0.88 — and then refutes it —
+                # "This is false; no such ban exists" contradicts at 0.80. The
+                # quote scored higher, so that passage was chosen, and its
+                # near-zero contradiction score was read off with it. The
+                # article was recorded as SUPPORTING the claim it exists to
+                # debunk, at the highest source weight in the system.
+                # A passage that merely reports the claim cannot count as the
+                # article endorsing it, so it is excluded from the entailment
+                # maximum. It stays eligible for contradiction: an article
+                # saying the claim is false is refuting it either way.
+                assertive = [
+                    i for i, passage in enumerate(passages)
+                    if not _CLAIM_REPORTING_FRAME.search(passage)
+                ] or list(range(len(nli_scores)))
+
+                support_idx = max(assertive, key=lambda i: nli_scores[i]["entailment"])
+                contradiction_idx = max(
+                    range(len(nli_scores)), key=lambda i: nli_scores[i]["contradiction"]
+                )
+                support_score = nli_scores[support_idx]["entailment"]
+                contradiction_score = nli_scores[contradiction_idx]["contradiction"]
+                best_idx = (
+                    support_idx if support_score >= contradiction_score
+                    else contradiction_idx
+                )
                 best_sentence = passages[best_idx] if best_idx < len(passages) else ""
 
-        # Determine stance
+        # Determine stance.
+        #
+        # A document that both entails and contradicts the claim somewhere is
+        # not evidence for either side — it is a document discussing the
+        # dispute, and the honest label is "unclear". Requiring a margin is
+        # what makes that possible: without one, 0.80 against 0.75 read as a
+        # confident "supports".
         if nli_available:
-            if support_score > contradiction_score and support_score > 0.35:
+            supports = support_score > STANCE_THRESHOLD
+            contradicts = contradiction_score > STANCE_THRESHOLD
+            if supports and contradicts:
+                # Both directions present: one must clearly dominate.
+                if support_score >= contradiction_score * STANCE_DOMINANCE:
+                    stance = "supports"
+                elif contradiction_score >= support_score * STANCE_DOMINANCE:
+                    stance = "contradicts"
+                else:
+                    stance = "unclear"
+            elif supports:
                 stance = "supports"
-            elif contradiction_score > support_score and contradiction_score > 0.35:
+            elif contradicts:
                 stance = "contradicts"
             else:
                 stance = "unclear"
