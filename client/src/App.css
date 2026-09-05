@@ -483,6 +483,65 @@
 .breakdown-item-muted { opacity: 0.55; }
 .breakdown-item-muted .breakdown-bar-fill { background: var(--gray-400); }
 
+/* Retrieval provenance disclosure — same muted type as the assessment notes,
+   no new colours beyond the status words. */
+.retrieval-details {
+  margin-top: 0.6rem;
+  font-size: 0.72rem;
+}
+
+.retrieval-details summary {
+  cursor: pointer;
+  color: var(--gray-500);
+  font-weight: 500;
+  list-style: none;
+}
+
+.retrieval-details summary::-webkit-details-marker { display: none; }
+
+.retrieval-details summary::before {
+  content: "▸ ";
+  color: var(--gray-400);
+}
+
+.retrieval-details[open] summary::before { content: "▾ "; }
+
+.retrieval-provider-list {
+  list-style: none;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.retrieval-provider-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.retrieval-provider {
+  font-weight: 500;
+  color: var(--gray-600);
+  min-width: 92px;
+}
+
+.retrieval-status {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--gray-500);
+}
+
+.retrieval-status.success  { color: #059669; }
+.retrieval-status.failed,
+.retrieval-status.timeout  { color: #dc2626; }
+.retrieval-status.disabled { color: var(--gray-400); }
+
+.retrieval-count { color: var(--gray-400); }
+
 .breakdown-caption {
   font-size: 0.68rem;
   color: var(--gray-400);
