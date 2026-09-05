@@ -89,11 +89,24 @@ python -m unittest discover -s tests -v
 ```
 
 The first evidence check downloads the NLI model configured by `NLI_MODEL`
-(default: `cross-encoder/nli-deberta-v3-small`). The Docker deployment uses a
-CPU-only PyTorch wheel and conservative thread limits so it fits on a 512 MB
-Render instance. If the NLI model cannot be
-loaded, the API deliberately returns **Insufficient evidence** rather than
-falling back to keyword-based truth labels.
+(default: `cross-encoder/nli-MiniLM2-L6-H768`, a ~22M-parameter NLI
+cross-encoder — chosen over the larger `cross-encoder/nli-deberta-v3-small`
+specifically because the larger model's resident memory exceeds small Render
+instances and triggers OOM restarts). The Docker deployment uses a CPU-only
+PyTorch wheel and conservative thread limits to minimize memory further. If
+you have a larger Render instance and want the higher accuracy of a bigger
+model, override `NLI_MODEL`. If the NLI model cannot be loaded, the API
+deliberately returns **Insufficient evidence** rather than falling back to
+keyword-based truth labels.
+
+Note on label ordering: NLI models don't standardize the order of their
+entailment/contradiction/neutral output classes, so `nli_service.py` only
+trusts a model's own named labels (or a small explicit table of
+pre-verified models) — for any other model, an ambiguous label output
+causes NLI to report `failed` rather than silently guessing. After
+switching `NLI_MODEL`, check `/api/health` for `nli.status == "ready"` and
+check the service logs for the `id2label=...` line logged on model load to
+confirm the label scheme is what you expect.
 
 ### 2. Start the Node.js Server
 ```bash
