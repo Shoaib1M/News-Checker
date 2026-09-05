@@ -259,12 +259,12 @@ def decompose_claim(claim: str) -> ClaimDecomposition:
     claim_type = classify_claim_type(claim)
     modality = extract_modality(claim)
     negation = bool(re.search(
-        r'\b(?:not|never|no|without|denied|deny|refuted|refute|didn\'t|did not|doesn\'t|does not|wasn\'t|was not|weren\'t|were not|cannot|can\'t)\b',
+        r'\b(?:not|never|no|without|denies|denied|deny|denying|refutes|refuted|refute|didn\'t|did not|doesn\'t|does not|wasn\'t|was not|weren\'t|were not|cannot|can\'t)\b',
         claim,
         re.IGNORECASE,
     ))
     attribution_match = re.search(
-        r'\b(?:according to|officials|experts|reportedly|allegedly|said|says|claimed|denied|confirmed|warned)\b',
+        r'\b(?:according to|officials|experts|reportedly|allegedly|said|says|claims?|claimed|denies|denied|confirms?|confirmed|warns?|warned)\b',
         claim,
         re.IGNORECASE,
     )

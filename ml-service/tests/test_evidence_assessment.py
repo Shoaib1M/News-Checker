@@ -1,3 +1,10 @@
+"""Tests for evidence aggregation (evidence_aggregator.py).
+
+These replace the old tests that exercised evidence_scraper.py, which was
+dead code (superseded by evidence_pipeline.py + evidence_aggregator.py and
+never called from main.py).
+"""
+
 import sys
 from pathlib import Path
 import unittest
@@ -6,104 +13,108 @@ SERVICE_DIR = Path(__file__).resolve().parents[1]
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
-import evidence_scraper
-import nli_service
-from nli_service import NLIService
-from evidence_scraper import EvidenceResult, stance_summary
+from evidence_aggregator import ClassifiedEvidence, compute_stance, count_independent_groups
 
 
-class FixedPipeline:
-    def __call__(self, pairs, **_kwargs):
-        return [[
-            {"label": "contradiction", "score": 0.02},
-            {"label": "neutral", "score": 0.03},
-            {"label": "entailment", "score": 0.95},
-        ] for _ in pairs]
+def _evidence(
+    url,
+    source_tier="reporting",
+    source_weight=0.8,
+    support=0.0,
+    contradiction=0.0,
+    nli_available=True,
+    stance="unclear",
+    source="Example",
+):
+    return ClassifiedEvidence(
+        url=url,
+        source=source,
+        source_tier=source_tier,
+        source_weight=source_weight,
+        support_score=support,
+        contradiction_score=contradiction,
+        nli_available=nli_available,
+        stance=stance,
+    )
 
 
-class EvidenceAssessmentTests(unittest.TestCase):
-    def setUp(self):
-        """Replace the NLI service singleton with a test double."""
-        self._original = nli_service._instance
-        nli_service._instance = NLIService(
-            pipeline_factory=lambda *_args, **_kwargs: FixedPipeline()
-        )
-
-    def tearDown(self):
-        nli_service._instance = self._original
-
-    def test_nli_evidence_is_ranked_above_unclassified_relevance(self):
-        documents = [
-            {
-                "url": "https://www.reuters.com/report",
-                "title": "Reuters report confirms vaccination coverage increased",
-                "snippet": "",
-                "text": "Vaccination coverage increased to 95 percent according to the CDC report.",
-                "source": "Reuters",
-                "provider": "test",
-            },
-            {
-                "url": "https://example.net/repost",
-                "title": "Vaccination coverage increased",
-                "snippet": "",
-                "text": "Vaccination coverage increased to 95 percent in this repost.",
-                "source": "Example",
-                "provider": "test",
-            },
-        ]
-        results = evidence_scraper.rank_by_similarity(
-            "Vaccination coverage increased to 95 percent.", documents
-        )
-        self.assertEqual(results[0].source_tier, "reporting")
-        summary = evidence_scraper.stance_summary(results)
+class ComputeStanceTests(unittest.TestCase):
+    def test_no_results_is_insufficient_evidence(self):
+        summary = compute_stance([])
         self.assertEqual(summary["status"], "insufficient_evidence")
+        self.assertFalse(summary["nli_available"])
 
     def test_unavailable_nli_cannot_create_a_verdict(self):
-        nli_service._instance = NLIService(
-            pipeline_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline"))
-        )
-        results = evidence_scraper.rank_by_similarity(
-            "Vaccination coverage increased.",
-            [{
-                "url": "https://www.cdc.gov/report",
-                "title": "Vaccination coverage increased",
-                "snippet": "",
-                "text": "Vaccination coverage increased in the latest report.",
-                "source": "CDC",
-                "provider": "test",
-            }],
-        )
-        self.assertEqual(evidence_scraper.stance_summary(results)["status"], "insufficient_evidence")
+        """A candidate that never got NLI-classified must not count as evidence."""
+        results = [_evidence("https://www.cdc.gov/report", nli_available=False)]
+        summary = compute_stance(results)
+        self.assertEqual(summary["status"], "insufficient_evidence")
+        self.assertEqual(summary["evidence_count"], 0)
 
     def test_primary_source_has_more_weight_than_repeated_reporting(self):
-        def result(source_tier, source_weight, support, contradiction, similarity):
-            return EvidenceResult(
-                url=f"https://{source_tier}.example/story",
-                title="Claim report",
-                snippet="",
-                similarity=similarity,
-                text_length=100,
-                provider="test",
-                source=source_tier,
-                support_score=support,
-                contradiction_score=contradiction,
-                stance="supports" if support > contradiction else "contradicts",
-                best_sentence="Claim report.",
-                source_tier=source_tier,
-                source_weight=source_weight,
-                nli_available=True,
-            )
-
         results = [
-            result("primary", 1.0, 0.90, 0.05, 0.8),
-            result("reporting", 0.8, 0.05, 0.90, 0.8),
-            result("reporting", 0.8, 0.05, 0.90, 0.8),
+            _evidence(
+                "https://primary.example/story", source_tier="primary",
+                source_weight=1.0, support=0.90, contradiction=0.05, stance="supports",
+            ),
+            _evidence(
+                "https://reporting-a.example/story", source_tier="reporting",
+                source_weight=0.8, support=0.05, contradiction=0.90, stance="contradicts",
+            ),
+            _evidence(
+                "https://reporting-b.example/story", source_tier="reporting",
+                source_weight=0.8, support=0.05, contradiction=0.90, stance="contradicts",
+            ),
         ]
+        summary = compute_stance(results)
+        self.assertEqual(summary["status"], "mixed")
 
-        summary = stance_summary(results)
-
+    def test_consistent_support_produces_supported_status(self):
+        results = [
+            _evidence(
+                "https://reuters.com/a", source_tier="reporting", source_weight=0.8,
+                support=0.80, contradiction=0.05, stance="supports",
+            ),
+            _evidence(
+                "https://apnews.com/b", source_tier="reporting", source_weight=0.8,
+                support=0.75, contradiction=0.05, stance="supports",
+            ),
+        ]
+        summary = compute_stance(results)
         self.assertEqual(summary["status"], "supported")
         self.assertGreater(summary["net"], 0)
+
+    def test_support_and_contradiction_together_is_mixed(self):
+        results = [
+            _evidence("https://a.example/x", support=0.80, contradiction=0.05, stance="supports"),
+            _evidence("https://b.example/y", support=0.05, contradiction=0.80, stance="contradicts"),
+        ]
+        summary = compute_stance(results)
+        self.assertEqual(summary["status"], "mixed")
+
+
+class IndependentGroupsTests(unittest.TestCase):
+    def test_same_domain_counts_once(self):
+        results = [
+            _evidence("https://www.reuters.com/a", nli_available=True),
+            _evidence("https://reuters.com/b", nli_available=True),
+        ]
+        self.assertEqual(count_independent_groups(results), 1)
+
+    def test_distinct_domains_count_separately(self):
+        results = [
+            _evidence("https://www.reuters.com/a", nli_available=True),
+            _evidence("https://apnews.com/b", nli_available=True),
+            _evidence("https://bbc.com/c", nli_available=True),
+        ]
+        self.assertEqual(count_independent_groups(results), 3)
+
+    def test_unclassified_candidates_are_excluded(self):
+        results = [
+            _evidence("https://www.reuters.com/a", nli_available=True),
+            _evidence("https://apnews.com/b", nli_available=False),
+        ]
+        self.assertEqual(count_independent_groups(results), 1)
 
 
 if __name__ == "__main__":

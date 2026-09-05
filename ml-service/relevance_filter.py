@@ -185,10 +185,32 @@ class RelevanceFilter:
         
         return len(matched) / len(claim_entities)
     
+    def _entity_tokens(self, decomp: ClaimDecomposition) -> Set[str]:
+        """Lowercased word tokens of the claim's own entity, for single-entity claims only.
+
+        For a single-entity claim (e.g. "US government considers banning
+        Google"), entity_match_score is nearly binary — any document
+        mentioning "Google" already scores 1.0 there, so letting that same
+        mention also inflate predicate/coherence scoring would make the
+        entity's mere presence carry almost the entire relevance decision,
+        regardless of what the document actually says about it.
+
+        Multi-entity claims (e.g. "United States" + "India") are left alone:
+        there, matching multiple distinct entities together is itself
+        meaningful relational evidence and should keep contributing to
+        predicate/coherence overlap.
+        """
+        if len(decomp.primary_entities) != 1:
+            return set()
+        tokens: Set[str] = set()
+        for entity in decomp.primary_entities:
+            tokens.update(entity.lower().split())
+        return tokens
+
     def _score_predicate_match(self, decomp: ClaimDecomposition, doc_keywords: Set[str]) -> float:
         """
         Score how relevant the document is to the claim's predicates.
-        
+
         Returns 0.0-1.0
         """
         claim_keywords = {
@@ -202,7 +224,8 @@ class RelevanceFilter:
             'will', 'next', 'last', 'today', 'tomorrow', 'yesterday',
             'month', 'year', 'day', 'time', 'being',
         })
-        
+        claim_keywords.difference_update(self._entity_tokens(decomp))
+
         if not claim_keywords:
             return 0.5
         
@@ -231,7 +254,8 @@ class RelevanceFilter:
             if token not in {'being', 'is', 'are', 'was', 'were', 'to'}
         }
         claim_keywords.update(decomp.entities_in_claim)
-        
+        claim_keywords.difference_update(self._entity_tokens(decomp))
+
         # If both entities and relevant keywords appear, coherence is high
         overlap = len(claim_keywords.intersection(doc_keywords))
         if len(doc_entities) > 0 and overlap > 1:

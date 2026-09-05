@@ -18,6 +18,13 @@ import jwt from "jsonwebtoken";
 
 // The secret key used to sign and verify our tokens.
 // In production, this MUST be a long random string stored securely in environment variables.
+// Fail fast rather than silently signing every token with a guessable
+// default — a weak default here would let anyone forge an auth token.
+if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
+  throw new Error(
+    "JWT_SECRET environment variable must be set in production."
+  );
+}
 const JWT_SECRET = process.env.JWT_SECRET || "newschecker-jwt-secret-change-me";
 
 /*
