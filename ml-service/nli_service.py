@@ -40,20 +40,54 @@ def get_nli_service() -> "NLIService":
 
 
 # ── Label normalisation ──────────────────────────────────────────────
-def _normalise_label(label: str) -> str:
-    """Map model output labels to canonical NLI classes.
+# Some HuggingFace model configs don't define semantic id2label names, so
+# the pipeline emits generic "LABEL_0"/"LABEL_1"/"LABEL_2" strings instead
+# of "entailment"/"contradiction"/"neutral". Label ORDER is not standardized
+# across NLI models — guessing wrong silently inverts every verdict — so we
+# only resolve indexed labels for models explicitly verified here. Never add
+# an entry without confirming the model's actual id2label order first.
+_KNOWN_INDEXED_LABEL_ORDERS: dict[str, dict[str, str]] = {
+    "cross-encoder/nli-deberta-v3-small": {
+        "label_0": "contradiction", "label_1": "neutral", "label_2": "entailment",
+    },
+    "cross-encoder/nli-deberta-v3-xsmall": {
+        "label_0": "contradiction", "label_1": "neutral", "label_2": "entailment",
+    },
+    "cross-encoder/nli-deberta-v3-base": {
+        "label_0": "contradiction", "label_1": "neutral", "label_2": "entailment",
+    },
+}
 
-    Different HuggingFace NLI models return labels in different formats:
-      - Named labels: "entailment", "contradiction", "neutral"
-      - Indexed labels: "LABEL_0" (contradiction), "LABEL_1" (neutral),
-        "LABEL_2" (entailment) — DeBERTa v3 convention
+
+class UnresolvableLabelError(ValueError):
+    """Raised when a model emits a label we cannot safely map to a class."""
+
+
+def _normalise_label(label: str, model_name: str) -> str:
+    """Map one model output label to a canonical NLI class.
+
+    Named labels ("entailment"/"contradiction"/"neutral") are safe to match
+    by substring regardless of index order. Indexed "LABEL_N" labels are
+    only resolved via the explicit, per-model table above — an unrecognized
+    model emitting indexed labels raises rather than guessing.
     """
-    label = label.lower().replace("_", " ")
-    if "entail" in label or label in {"label 2", "label_2"}:
+    normalised = label.lower().strip()
+    if "entail" in normalised:
         return "entailment"
-    if "contradict" in label or label in {"label 0", "label_0"}:
+    if "contradict" in normalised:
         return "contradiction"
-    return "neutral"
+    if "neutral" in normalised:
+        return "neutral"
+
+    indexed_key = normalised.replace(" ", "_")
+    order = _KNOWN_INDEXED_LABEL_ORDERS.get(model_name)
+    if order and indexed_key in order:
+        return order[indexed_key]
+
+    raise UnresolvableLabelError(
+        f"Model '{model_name}' emitted unrecognized label '{label}' with no "
+        "known named or indexed mapping — refusing to guess."
+    )
 
 
 # ── Core service ─────────────────────────────────────────────────────
@@ -66,7 +100,7 @@ class NLIService:
         Injected factory for testing (replaces ``transformers.pipeline``).
     model_name : str, optional
         HuggingFace model identifier.  Defaults to the ``NLI_MODEL``
-        environment variable or ``cross-encoder/nli-deberta-v3-small``.
+        environment variable or ``cross-encoder/nli-MiniLM2-L6-H768``.
     """
 
     # Valid states
@@ -81,7 +115,7 @@ class NLIService:
         model_name: str | None = None,
     ):
         self.model_name: str = model_name or os.getenv(
-            "NLI_MODEL", "cross-encoder/nli-deberta-v3-small"
+            "NLI_MODEL", "cross-encoder/nli-MiniLM2-L6-H768"
         )
         self._pipeline_factory = pipeline_factory
         self._pipeline = None
@@ -150,7 +184,17 @@ class NLIService:
                 )
                 self._status = self.READY
                 self._error = None
-                print(f"NLI model loaded: {self.model_name}")
+
+                # Log the model's actual id2label mapping so the real label
+                # scheme is observable in deployment logs — this is the
+                # verification step that must happen whenever NLI_MODEL
+                # changes, since label order is not standardized across
+                # models (see _KNOWN_INDEXED_LABEL_ORDERS above).
+                try:
+                    id2label = self._pipeline.model.config.id2label
+                    print(f"NLI model loaded: {self.model_name} — id2label={id2label}")
+                except Exception:
+                    print(f"NLI model loaded: {self.model_name}")
             except Exception as exc:
                 self._status = self.FAILED
                 self._error = str(exc)
@@ -213,10 +257,19 @@ class NLIService:
             if isinstance(output, dict):
                 output = [output]
             values = {"entailment": 0.0, "contradiction": 0.0, "neutral": 0.0}
-            for item in output:
-                values[_normalise_label(str(item.get("label", "")))] = float(
-                    item.get("score", 0.0)
-                )
-            values["available"] = True
+            try:
+                for item in output:
+                    values[_normalise_label(str(item.get("label", "")), self.model_name)] = float(
+                        item.get("score", 0.0)
+                    )
+                values["available"] = True
+            except UnresolvableLabelError as exc:
+                # An unrecognized label scheme means we cannot trust any
+                # score from this model — abstain entirely rather than risk
+                # an inverted (silently wrong) verdict.
+                self._status = self.FAILED
+                self._error = str(exc)
+                print(f"NLI label mapping failed: {exc}")
+                values = {"entailment": 0.0, "contradiction": 0.0, "neutral": 1.0, "available": False}
             scores.append(values)
         return scores

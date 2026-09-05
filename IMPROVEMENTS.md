@@ -317,3 +317,34 @@ with the underlying error recorded (not silently collapsed into
 `NO_RESULTS` or a false verdict). Frontend states (verified evidence,
 unverified candidates, deterministic result) were confirmed visually via
 Playwright with the real UI code and mocked API responses.
+
+## 2026-09-05 (follow-up): NLI memory fix after Render OOM
+
+After deploying, the ml-service's Render instance hit its memory limit and
+was auto-restarted. `cross-encoder/nli-deberta-v3-small` (~141M params, ~560MB
+of weights alone in fp32) plus PyTorch's baseline overhead does not fit on a
+512MB instance.
+
+- Switched the default `NLI_MODEL` to `cross-encoder/nli-MiniLM2-L6-H768`, a
+  ~22M-parameter NLI cross-encoder — roughly 6x smaller — in both
+  `Dockerfile` and `nli_service.py`'s fallback default.
+- **Label-order safety**: NLI models don't standardize the order of their
+  entailment/contradiction/neutral output classes, and the previous code
+  hardcoded a single "LABEL_0/1/2 = DeBERTa v3 convention" assumption that
+  would silently apply to *any* model, including one we haven't verified —
+  a wrong guess here inverts every verdict without any visible error.
+  Replaced it with: named labels ("entailment"/"contradiction"/"neutral")
+  are matched by substring regardless of order (safe, model-independent);
+  indexed "LABEL_N" labels are only resolved via an explicit
+  `_KNOWN_INDEXED_LABEL_ORDERS` table for models we've actually verified
+  (currently the `nli-deberta-v3-*` family). Any other model emitting
+  indexed labels now makes NLI report `failed` and abstain, rather than
+  guess. The model's real `id2label` mapping is also logged on load for
+  manual verification.
+  This sandbox could not reach `huggingface.co` (network-restricted), so
+  the new model's actual label scheme was **not** verified against a live
+  download here — verify by checking `/api/health` (`nli.status`) and the
+  `id2label=...` log line after deploying, per the new README note.
+- Added tests covering: named labels resolve correctly regardless of model
+  identity or output order; an unlisted model emitting raw `LABEL_N` fails
+  safe (`available: False`, service status `failed`) instead of guessing.

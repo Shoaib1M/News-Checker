@@ -1,3 +1,20 @@
+"""
+FILE PURPOSE:
+The simplest baseline model in the project: a from-scratch logistic
+regression classifier (one linear layer + sigmoid, no hidden layer),
+trained on TF-IDF bigrams only. It exists purely as a lower bound to
+compare the MLP models against — "how well does a straight line through
+the data do?"
+
+USED BY:
+- evaluate_models.py (offline comparison script that powers the numbers
+  shown on the frontend's Model Comparison page). Not used by the live
+  API — main.py loads binary_truth_mlp.py instead.
+
+NOT to be confused with the production model: this file is experimental/
+research-only, kept for the "Logistic Regression" column in Model Comparison.
+"""
+
 import numpy as np
 
 class LogisticRegression:
