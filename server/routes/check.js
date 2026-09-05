@@ -28,7 +28,15 @@ const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 // (multiple providers x multiple queries, then article fetches), so this
 // needs real headroom — but it must still have a ceiling so a hung
 // ml-service can't hang every Express request indefinitely.
-const ML_SERVICE_TIMEOUT_MS = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 60_000;
+//
+// 180s (not something tighter) because this project runs locally for demos:
+// the NLI model downloads/loads on the first evidence-requiring request of
+// the process's lifetime, and without GNEWS_API_KEY/GUARDIAN_API_KEY/
+// NEWSAPI_KEY configured, retrieval falls back entirely to DuckDuckGo across
+// up to 4 queries, each with its own retries — comfortably able to exceed a
+// minute on that first request alone. Subsequent requests are much faster
+// once the model is warm in memory.
+const ML_SERVICE_TIMEOUT_MS = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 180_000;
 
 /*
 PURPOSE:

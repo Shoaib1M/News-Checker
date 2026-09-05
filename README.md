@@ -332,7 +332,7 @@ All served by `server/` (Express), all under `/api`:
 | `GOOGLE_CLIENT_ID` | **Yes** (for sign-in) | — | From Google Cloud Console. Must match the client's `VITE_GOOGLE_CLIENT_ID`. |
 | `FASTAPI_URL` | **Yes** in production | `http://localhost:8000` | Must point at your deployed ML service (Render URL). |
 | `CLIENT_URL` | No | `http://localhost:5173` | CORS origin. Only matters if client and server are deployed as separate origins. |
-| `ML_SERVICE_TIMEOUT_MS` | No | `60000` | Ceiling on the Node→FastAPI proxy call, so a hung ML service can't hang Express forever. |
+| `ML_SERVICE_TIMEOUT_MS` | No | `180000` | Ceiling on the Node→FastAPI proxy call, so a hung ML service can't hang Express forever. 180s by default to cover the NLI model's first-time download plus a DuckDuckGo-only retrieval pass — see [Running this for a demo](#running-this-for-a-demo). |
 | `NODE_ENV` | Set by platform | — | Vercel sets this to `production` automatically — this is what triggers the `JWT_SECRET` requirement above. |
 
 ### Client (`client/` — build-time Vite variables, baked in at build)
