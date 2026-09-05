@@ -419,7 +419,7 @@ function App() {
             <strong>1.</strong> Enter a claim or headline
           </div>
           <div>
-            <strong>2.</strong> We interpret the actual proposition
+            <strong>2.</strong> We work out what kind of claim it is
           </div>
           <div>
             <strong>3.</strong> We search for relevant evidence
@@ -431,7 +431,7 @@ function App() {
             <strong>5.</strong> We check supporting and contradicting sources
           </div>
           <div>
-            <strong>6.</strong> We give a verdict with the evidence used
+            <strong>6.</strong> We give a verdict, or say why we can't
           </div>
         </div>
         <div className="info-panel-list">
