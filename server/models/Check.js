@@ -38,6 +38,7 @@ const evidenceItemSchema = new mongoose.Schema(
     source_tier: String,         // primary, fact-check, reporting, or unclassified
     nli_available: Boolean,      // Whether the stance came from the NLI model
     stance_note: String,         // Why the stance differs from what the NLI scores implied
+    published: String,           // ISO 8601 publication date, or absent when the provider gave none
   },
   // _id: false tells Mongoose NOT to create a unique ID for every single piece of evidence.
   // We only need an ID for the parent Check document.
@@ -138,6 +139,15 @@ const checkSchema = new mongoose.Schema(
       score: Number,
       verdict: String,
       threshold: Number,
+    },
+    // Which slice of coverage was searched, and why. Without this a
+    // replayed check cannot say whether only the last month was read.
+    coverage: {
+      mode: String,               // recent | historical
+      requested: String,          // what the user asked for
+      windowDays: Number,         // days searched, absent when unlimited
+      reason: String,             // why this mode was chosen
+      staleEvidenceCount: Number, // found, but too old to be reporting it
     },
     retrieval: {
       status: String,

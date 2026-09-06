@@ -255,6 +255,47 @@
 
 .char-count { font-size: 0.75rem; color: var(--gray-400); }
 
+/* Coverage mode picker. Deliberately quiet: it sits in the input footer beside
+   the character count, borrows the existing purple for its selected state, and
+   is not meant to compete with the Check button. */
+.mode-picker {
+  display: flex;
+  gap: 0.25rem;
+  margin-right: auto;
+}
+
+.mode-option {
+  font-size: 0.72rem;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--gray-200);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--gray-500);
+  cursor: pointer;
+}
+
+.mode-option:hover:not(:disabled) { border-color: var(--purple); color: var(--purple); }
+
+/* The hover rule above carries two pseudo-classes, so it outweighs a plain
+   `.mode-option.active` — which made the label of the option you had just
+   clicked purple on purple, and invisible, for as long as the pointer stayed
+   on it. The selected state must therefore win at the same weight. */
+.mode-option.active,
+.mode-option.active:hover:not(:disabled) {
+  background: var(--purple);
+  border-color: var(--purple);
+  color: #fff;
+}
+
+.mode-option:disabled { opacity: 0.5; cursor: default; }
+
+/* The footer now holds three things; on a narrow screen the picker wraps to
+   its own line rather than squeezing the button. */
+@media (max-width: 480px) {
+  .input-footer { flex-wrap: wrap; gap: 0.5rem; }
+  .mode-picker { order: -1; width: 100%; }
+}
+
 .btn-check {
   display: flex;
   align-items: center;
@@ -804,6 +845,12 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   margin: 0;
+}
+
+.evidence-date {
+  font-size: 0.7rem;
+  color: var(--gray-400);
+  margin: 0 0 0.4rem;
 }
 
 /* Why a source's stance was overridden — same weight as the passage text,

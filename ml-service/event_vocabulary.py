@@ -43,7 +43,13 @@ EVENT_VERBS: dict[str, tuple[str, ...]] = {
     # preferred over single ambiguous words: "vacates office" is unmistakable
     # where a bare "vacates" is not, and "bar"/"barred" were left out of the
     # ban family for the same reason.
+    # "sacked"/"dismissed"/"axed" are one-sided removals rather than
+    # resignations, but for retrieval they are the same event: the person is
+    # out of the job, and coverage of one is coverage of the other. A bare
+    # "fired" is deliberately absent — police fire tear gas, and a rifle is
+    # fired — so only the passive forms qualify.
     "resign": ("resign", "resigns", "resigned", "resignation", "quit", "quits",
+               "sacked", "dismissed", "axed", "was fired", "were fired",
                "step down", "steps down", "stepped down", "stepping down",
                "steps aside", "stepped aside", "stepping aside",
                "stands down", "stood down", "standing down",
@@ -64,30 +70,63 @@ EVENT_VERBS: dict[str, tuple[str, ...]] = {
             "lost their lives"),
     "invade": ("invade", "invades", "invaded", "invasion", "attack",
                "attacks", "attacked", "strike", "strikes", "war"),
-    "increase": ("increase", "increases", "increased", "rise", "rises",
+    # "raise"/"raised" also appears in "raised concerns", which is not an
+    # increase. It is included anyway: in news copy the quantitative sense
+    # dominates, and a missing word makes the relevance gate fail outright
+    # where a loose one only makes it slightly less selective.
+    #
+    # "jump" and "climb" were tried and removed. They matched "the children
+    # jumped into the lake" and "he climbed the stairs", and soar/surge/rise
+    # already cover the sense — the same reasoning that keeps bare "up" and
+    # "down" out below.
+    "increase": ("raise", "raises", "raised", "hike", "hikes", "hiked",
+                 "soar", "soars", "soared", "spike", "spiked",
+                 "increase", "increases", "increased", "rise", "rises",
                  "rose", "rising", "surge", "surges", "surged", "grew",
                  "growth", "higher", "improve", "improves", "improved",
                  "improvement", "boost", "boosts", "boosted", "gain", "gains"),
-    "decrease": ("decrease", "decreases", "decreased", "fall", "falls",
+    "decrease": ("lower", "lowers", "lowered", "slash", "slashes", "slashed",
+                 "plunge", "plunges", "plunged", "tumble", "tumbles",
+                 "tumbled", "sank", "shrank", "shrink", "shrinks",
+                 "reduce", "reduces", "reduced", "halve", "halved",
+                 "decrease", "decreases", "decreased", "fall", "falls",
                  "fell", "falling", "drop", "drops", "dropped", "decline",
                  "declines", "declined", "lower", "cut", "cuts",
                  "worsen", "worsens", "worsened", "harm", "harms", "harmed",
                  "casts doubt", "no effect"),
-    "approve": ("approve", "approves", "approved", "approval", "pass",
+    "approve": ("uphold", "upholds", "upheld", "ratify", "ratifies",
+                "ratified", "pardon", "pardons", "pardoned", "authorise",
+                "authorised", "authorize", "authorized", "greenlight",
+                "greenlit", "approve", "approves", "approved", "approval",
+                "pass",
                 "passes", "passed", "enact", "enacts", "enacted", "signed"),
-    "reject": ("reject", "rejects", "rejected", "deny", "denies", "denied",
+    "reject": ("repeal", "repeals", "repealed", "overturn", "overturns",
+               "overturned", "withdraw", "withdraws", "withdrew",
+               "withdrawal", "scrap", "scraps", "scrapped", "quash",
+               "quashed", "revoke", "revokes", "revoked",
+               "reject", "rejects", "rejected", "deny", "denies", "denied",
                "refuse", "refuses", "refused", "veto", "vetoed", "struck down"),
     "rename": ("rename", "renames", "renamed", "renaming", "name change",
                "rebrand", "rebrands", "rebranded", "new name"),
     "fine": ("fine", "fines", "fined", "penalty", "penalties", "sued",
              "lawsuit", "settlement", "antitrust"),
-    "close": ("close", "closes", "closed", "shut", "shuts", "shutdown",
+    "close": ("recall", "recalls", "recalled", "halt", "halts", "halted",
+              "suspend", "suspends", "suspended", "cease", "ceases", "ceased",
+              "close", "closes", "closed", "shut", "shuts", "shutdown",
               "shut down", "collapse", "collapses", "collapsed", "bankrupt",
               "bankruptcy", "dissolve", "dissolved"),
-    "elect": ("elect", "elects", "elected", "election", "wins", "won",
+    "elect": ("clinch", "clinches", "clinched",
+              "elect", "elects", "elected", "election", "wins", "won",
               "victory", "sworn in", "inaugurated"),
     "legalize": ("legalize", "legalizes", "legalized", "legalise",
                  "legalised", "decriminalize", "decriminalized"),
+    # Disasters are a large share of breaking news and had no event of their
+    # own, so a claim about an earthquake matched coverage on entities alone.
+    "disaster": ("earthquake", "quake", "flood", "floods", "flooding",
+                 "wildfire", "wildfires", "hurricane", "typhoon", "cyclone",
+                 "tsunami", "landslide", "eruption", "erupted", "derailed",
+                 "devastate", "devastates", "devastated", "evacuate",
+                 "evacuates", "evacuated", "evacuation"),
     "announce": ("announce", "announces", "announced", "announcement",
                  "confirm", "confirms", "confirmed", "declare", "declares",
                  "declared", "plans", "proposal", "proposes", "proposed"),

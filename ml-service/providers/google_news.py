@@ -32,6 +32,7 @@ from urllib.parse import quote_plus, urlparse
 from urllib.request import Request, urlopen
 
 from providers import SearchResult
+from providers.dates import parse_rfc2822
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -87,13 +88,21 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", _TAG_RE.sub(" ", text or "")).strip()
 
 
-def search(query: str, max_results: int = 5, timeout: int = 6) -> list[SearchResult]:
+def search(query: str, max_results: int = 5, timeout: int = 6,
+           recent_days: int | None = None) -> list[SearchResult]:
     """Return news results for one query.
 
     Raises on network failure so the provider registry records a diagnostic
     rather than silently reporting an empty press.
     """
-    url = FEED_URL.format(query=quote_plus(query))
+    # Google News' search endpoint understands a `when:` operator. Without it
+    # the feed is recency-RANKED but not recency-FILTERED, so a query about
+    # today's story still returns last year's coverage of the same subject
+    # whenever that older coverage matches the words better.
+    effective_query = query.strip()
+    if recent_days:
+        effective_query = f"{effective_query} when:{recent_days}d"
+    url = FEED_URL.format(query=quote_plus(effective_query))
     request = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(request, timeout=timeout) as response:
         payload = response.read()
@@ -138,6 +147,7 @@ def search(query: str, max_results: int = 5, timeout: int = 6) -> list[SearchRes
             text="",
             provider="google_news",
             source=source,
+            published=parse_rfc2822(item.findtext("pubDate")),
         ))
 
         if len(results) >= max_results:

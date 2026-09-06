@@ -27,6 +27,11 @@ const router = Router();
 // In development, this is usually http://localhost:8000
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
+// Must match ml-service's CheckRequest.mode pattern. An unknown value
+// falls back to "auto" rather than 400ing: the mode is a search hint, and
+// refusing the whole check over it would be worse than ignoring it.
+const VALID_MODES = new Set(["auto", "recent", "historical"]);
+
 // The evidence pipeline can involve several sequential network calls
 // (multiple providers x multiple queries, then article fetches), so this
 // needs real headroom — but it must still have a ceiling so a hung
@@ -62,7 +67,13 @@ Our Node server handles the database, so the request must pass through here firs
 */
 router.post("/", optionalAuth, async (req, res) => {
   try {
-    const { statement } = req.body;
+    const { statement, mode } = req.body;
+
+    // Validated here as well as in ml-service. This proxy forwards an explicit
+    // allowlist of fields rather than req.body, so anything not named here
+    // silently never reaches FastAPI — which is how a new request field looks
+    // like a backend that ignores it.
+    const coverageMode = VALID_MODES.has(mode) ? mode : "auto";
 
     // Step 1: Basic validation.
     // Both bounds must match ml-service's CheckRequest (min_length=5,
@@ -95,7 +106,7 @@ router.post("/", optionalAuth, async (req, res) => {
       mlResponse = await fetch(`${FASTAPI_URL}/api/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ statement: trimmed }),
+        body: JSON.stringify({ statement: trimmed, mode: coverageMode }),
         signal: controller.signal,
       });
     } catch (fetchError) {
@@ -180,6 +191,13 @@ router.post("/", optionalAuth, async (req, res) => {
             score: result.ml.score,
             verdict: result.ml.verdict,
             threshold: result.ml.threshold,
+          },
+          coverage: result.coverage && {
+            mode: result.coverage.mode,
+            requested: result.coverage.requested,
+            windowDays: result.coverage.window_days,
+            reason: result.coverage.reason,
+            staleEvidenceCount: result.coverage.stale_evidence_count,
           },
           retrieval: result.retrieval && {
             status: result.retrieval.status,

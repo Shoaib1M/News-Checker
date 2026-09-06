@@ -244,7 +244,10 @@ def assess_coverage(
        claim that something did *not* happen — no outlet reporting that the
        US banned Google is exactly what "the US did not ban Google" predicts,
        so treating silence as evidence against it inverts the inference.
-    6. The NLI model was available. "No retrieved source supports this" is a
+    6. No evidence was set aside as too old. Coverage that exists but predates
+       the claim's window is not silence — "I found this, but from last year"
+       is a different finding from "this never happened".
+    7. The NLI model was available. "No retrieved source supports this" is a
        claim about what the sources say, and we only know what they say if
        something actually read them. With NLI down we compared nothing, so
        the honest answer stays "could not verify".
@@ -274,6 +277,13 @@ def assess_coverage(
     if salience != "high":
         return None
     if stance.get("supporting_count", 0) > 0 or stance.get("contradicting_count", 0) > 0:
+        return None
+    # Coverage that exists but predates the claim's window is not silence. In
+    # recent mode a document is stripped of its support when it is too old to
+    # be reporting the event, and without this those documents would leave
+    # supporting_count at zero and be read as nobody having reported it —
+    # turning "I found this, but from last year" into "this never happened".
+    if stance.get("stale_evidence_count", 0) > 0:
         return None
 
     subject = "such a plan" if prospective else "this"

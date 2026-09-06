@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
 
@@ -15,6 +16,10 @@ class SearchResult:
     text: str = ""  # Full article text if available
     provider: str = "unknown"
     source: str = ""  # Publisher name
+    # When the article was published, UTC, or None when the provider does not
+    # say. None is common and must stay usable: Wikipedia and DuckDuckGo give
+    # no date at all, and a guessed one would be used to discard evidence.
+    published: datetime | None = None
 
 
 @dataclass

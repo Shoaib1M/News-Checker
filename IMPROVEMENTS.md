@@ -950,3 +950,203 @@ other side of it is a confident claim about the world.
 one provider, so every absence-of-coverage test was asserting that a single
 provider is enough. The harness now stubs two, which is what a working search
 looks like, and a new test pins that one is not enough.
+
+### Bug 29 — the system had no clock, which is the core weakness on today's news
+
+`claim_recency.py`, `providers/dates.py` (new), all providers, `evidence_pipeline.py`,
+`evidence_aggregator.py`, `main.py`, `server/routes/check.js`, `App.jsx`
+
+Entailment has no clock. *"India's prime minister resigned on Tuesday"* entails
+*"the prime minister of India resigned this morning"* perfectly — and if that
+article is from 2014, the entailment is a coincidence, not a confirmation.
+Nothing compared the two dates, because **no article carried a date at all**.
+
+The dates were always in the payloads and were being decoded and thrown away:
+Google News ships RFC 2822 in `<pubDate>`, GNews and NewsAPI ship ISO 8601 in
+`publishedAt`, the Guardian ships it in `webPublicationDate`. `SearchResult`
+simply had no field for it.
+
+Retrieval was blind from the other end too. The feeds are recency-**ranked**
+but not recency-**filtered**, and NewsAPI was queried with
+`sortBy=relevancy` — which for a breaking story returns last year's article
+about the same subject, because it matches the words better.
+
+There are now two modes, selectable in the UI and auto-detected from the
+claim's wording as a fallback:
+
+- **Recent** — the last 30 days. Every provider that supports a date filter is
+  asked for that window (`when:30d`, `from=`, `sortBy=publishedAt`,
+  `from-date=`), Wikipedia sits the round out because it is a tertiary source
+  that lags a news cycle by days, and an article older than the window cannot
+  confirm the claim.
+- **Historical** — no date limit, relevance-ordered, Wikipedia included.
+
+Auto-detection is a convenience, not a substitute for the choice: *"the PM
+resigned"* is a claim about today for someone who has just seen it on
+television, and no parser recovers that from the words. The person checking
+knows; the parser does not.
+
+**Guardrails, which are most of the test file:**
+
+- Staleness only ever *withdraws* support. An old article is not evidence that
+  today's event did not happen.
+- It never fires on an undated claim, and never on a document with no date —
+  Wikipedia and DuckDuckGo supply none, and treating unknown as old would
+  delete real evidence over a missing field.
+- The staleness window (45 days) is deliberately wider than the retrieval
+  window (30). Retrieval should *ask* for a month; evidence arriving from just
+  outside it — a sloppy feed timestamp, an article republished with a new date
+  — should not be thrown away at the boundary.
+- Absence-of-coverage is vetoed when anything was set aside as too old.
+  *"I found this, but from 2014"* is a different finding from *"this never
+  happened"*, and only the second is a statement about the world.
+
+`server/routes/check.js` forwards an allowlist of fields rather than
+`req.body`, so the new mode had to be added there explicitly — otherwise it
+would have been silently dropped, and the backend would have looked like it was
+ignoring the setting.
+
+### Bug 30 — the selected mode button was invisible while hovered
+
+`client/src/App.css`
+
+`.mode-option:hover:not(:disabled)` carries two pseudo-classes, giving it
+specificity (0,0,3,0) against `.mode-option.active`'s (0,0,2,0). The hover rule
+therefore won on the button you had just clicked, painting purple text on the
+purple selected background — so the label of the selected option vanished for
+as long as the pointer stayed on it, which is every click.
+
+Neither `npm run build`, eslint, nor the render smoke test can see this: the
+element is present, visible, and correctly sized. It was found by screenshotting
+the component and looking at it, and confirmed by reading the computed style —
+`color: rgb(124, 58, 237)` on `background: rgb(124, 58, 237)`.
+
+### Bug 31 — normalisation deleted the recency signal it was standing next to
+
+`claim_normalizer.py`, `claim_recency.py`, `main.py`
+
+Created by combining two individually correct features. The normaliser strips
+the wire-service label off the front of a submission, which is right for
+search — `BREAKING:` is packaging, not proposition, and useless as a query
+term. But mode detection then ran on the **normalised** text:
+
+```
+"BREAKING: The United States banned Google"
+  normalised -> "The United States banned Google"
+  mode       -> historical
+```
+
+So every pasted breaking headline — the single most common way a fresh claim
+arrives — searched with no date window and accepted coverage of any age. Two
+separate faults: the labels that *were* recency markers got stripped before
+detection could see them, and `JUST IN` / `URGENT` were never markers at all.
+
+The time anchor is now read from the **original submission** as well as the
+normalised claim. Only labels that say *when* count — `breaking`, `just in`,
+`urgent`, `developing`, `update`, `alert`, `live`. `EXCLUSIVE`, `ANALYSIS` and
+`OPINION` say what kind of piece it is, not when it happened, and are pinned
+as not forcing recent mode.
+
+### Bug 32 — the drift guard had the defect it exists to catch
+
+`ml-service/tests/test_schema_round_trip.py`
+
+The round-trip guard walked a **hand-written** dict of the nested blocks on
+`CheckResponse`. `coverage` was added as a new block and not added to that
+dict, so the guard reported every field round-tripping while the entire block
+was dropped between the live check and the saved one — the live path passes
+the whole response through, and only the history replay reconstructs it field
+by field, so the loss was invisible until someone opened a saved check.
+
+A drift test maintained by hand has exactly the failure mode of the duplicated
+rule it exists to catch, which is now the fourth instance of that pattern in
+this codebase. The blocks are discovered from `CheckResponse.model_fields`
+instead. Turning it on immediately reported all five `coverage` fields as
+missing from `routes/check.js`, `models/Check.js` and the history mapper in
+`App.jsx` — all three now carry them.
+
+The result panel also states which slice was searched and why — *"Searched the
+last 30 days — it was submitted as BREAKING"* — and says so when sources were
+found but set aside as too old.
+
+### Bug 33 — nineteen of twenty ordinary news verbs were invisible
+
+`event_vocabulary.py`
+
+The event vocabulary drives **both** query generation and relevance scoring, so
+a verb missing from it is a claim the system cannot search for *and* cannot
+recognise coverage of. Measured against twenty ordinary headlines, **nineteen
+registered no event at all**:
+
+```
+MISS  The central bank raised interest rates        expected=increase  got=[]
+MISS  The minister was sacked after the vote        expected=resign    got=[]
+MISS  Parliament repealed the surveillance law      expected=reject    got=[]
+MISS  The court upheld the ban                      expected=approve   got=['ban']
+MISS  The storm devastated the coastal towns        expected=invade    got=[]
+...   19/20 common news events unrecognised
+```
+
+Rate rises, cabinet sackings, repeals, recalls and evacuations are not edge
+cases — they are most of a news cycle, which is exactly the complaint that
+started this: results on today's news were thin.
+
+Added: `raise/hike/soar/spike` to increase; `lower/slash/plunge/tumble/reduce/
+halve` to decrease; `repeal/overturn/withdraw/scrap/quash/revoke` to reject;
+`uphold/ratify/pardon/authorise/greenlight` to approve; `recall/halt/suspend/
+cease` to close; `sacked/dismissed/axed/was fired` to resign; `clinch` to
+elect; and a new **disaster** family (earthquake, flood, wildfire, hurricane,
+tsunami, landslide, eruption, derailed, devastate, evacuate) which had no
+representation at all.
+
+**Two candidates were tried and removed.** `jump` and `climb` matched *"the
+children jumped into the lake"* and *"he climbed the stairs"*, and
+soar/surge/rise already cover the sense — the same reasoning that keeps bare
+"up" and "down" out. A bare `fired` was excluded too: police fire tear gas and
+rifles are fired, so only `was fired` / `were fired` count as a dismissal.
+Negative controls are pinned alongside the positives.
+
+### The accuracy number — `news_benchmark.py`
+
+There was no answer to "how accurate is it?". The LIAR figure (56.9% against a
+56.4% majority class) measures a model that ships only as a prior and says
+nothing about the pipeline that actually decides verdicts.
+
+There is no labelled corpus of today's news and there cannot be — labelling it
+is the task. So the benchmark builds one: **today's real headlines are the
+positive class**, and **corrupted versions of them are the negative class**
+(antonym swap, changed figure, negation). Triage drops questions, opinion
+pieces and listicles first, since scoring the system on non-assertions measures
+nothing.
+
+The report states its own weaknesses, because they change what the number
+means. A headline is "reported", not "true". The positive cases are partly
+self-confirming — the headlines come from the same indexes the system searches.
+Corrupted headlines are not real misinformation, which is built to be plausible
+and often carries supporting coverage. So the two directions are **never
+averaged into one "accuracy"**, and a test asserts the summary contains no such
+key.
+
+**The number worth quoting is the wrong-answer rate**: how often the system
+stated something confidently false. Missing a true claim is a shortfall;
+asserting a false one is the failure a fact-checker must not make.
+
+**Running it end to end against stubbed retrieval found four defects in the
+corrupter itself**, each of which would have blamed the pipeline for the
+benchmark's own bugs:
+
+- *"The central bank lower interest rates"* — the antonym was substituted in
+  base form regardless of tense. A system asked to rule on a broken sentence is
+  being tested on its parser.
+- *"India's PM resigned after coalition talks launch"* — an arbitrary event
+  anywhere in the headline was flipped, so a subordinate clause changed and the
+  claim stayed substantially **true**. Only the headline's first (main) event
+  is eligible now, and a headline whose main event has no antonym is skipped.
+- *"Regulators repealed the merger"* — grammatical but odd, because the antonym
+  family's first entry won instead of its canonical verb.
+- *"A magnitude 7 did not earthquake struck northern Japan"* — negation applied
+  to a noun. It now requires an inflected verb, and every generated stem is
+  checked against the vocabulary rather than guessed.
+
+A headline that cannot be corrupted cleanly is **skipped**. Losing a sample
+costs a little statistical power; mangling one costs the number's meaning.
