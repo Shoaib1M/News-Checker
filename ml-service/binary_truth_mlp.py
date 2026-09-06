@@ -349,8 +349,57 @@ def build_text_input(df):
 """
 PURPOSE: Extracts numerical history data and scales it down.
 """
-def build_history_features(df, train_max_values=None):
+# Which credit-history column each label increments. Note there is no column
+# for "true" — LIAR ships five counts for six labels.
+LABEL_TO_HISTORY_COLUMN = {
+    "barely-true": "barely_true",
+    "false": "false",
+    "half-true": "half_true",
+    "mostly-true": "mostly_true",
+    "pants-fire": "pants_fire",
+}
+
+
+def build_history_features(df, train_max_values=None, deleak_labels=None):
+    """The speaker's credit history, optionally with the current row removed.
+
+    WHY `deleak_labels` EXISTS — THIS FEATURE LEAKS THE TARGET:
+    The credit-history counts are meant to be the speaker's *past* record. They
+    include the current statement's own label. Measured over the 2,054 speakers
+    who appear exactly once in the whole dataset:
+
+        own-label count == 1    99.2%
+        total history  == 1     98.9%
+        total history  == 0      0.8%
+
+    A speaker with one statement carries exactly one count, sitting in that
+    statement's own label column. The feature partly IS the target, and any
+    accuracy trained on it is inflated — which is where this project's old
+    "72.38% on LIAR" came from.
+
+    There is a second-order version of the same leak. LIAR has no `true`
+    column, so a solo speaker labelled "true" has all-zero history: 352 of the
+    353 such rows. All-zero history was therefore itself a signal for "true".
+    Subtracting the current row removes both — a solo "false" speaker also
+    becomes all-zero, and the asymmetry goes with it.
+
+    Passing ``deleak_labels`` (the split's label column) makes the feature mean
+    "this speaker's OTHER statements", which is what it was always supposed to
+    mean. Inference passes nothing: a live claim is not in anyone's history, so
+    there is nothing to subtract.
+    """
     features = df[HISTORY_COLUMNS].fillna(0).astype(float).values
+
+    if deleak_labels is not None:
+        column_index = {name: i for i, name in enumerate(HISTORY_COLUMNS)}
+        for row, label in enumerate(deleak_labels):
+            column = LABEL_TO_HISTORY_COLUMN.get(label)
+            if column is not None:
+                features[row, column_index[column]] -= 1.0
+        # A handful of rows carry a zero count for their own label already;
+        # clamp rather than let a negative through into log1p.
+        features = np.maximum(features, 0.0)
+
     # log1p prevents people with 10,000 past statements from overpowering the model
     features = np.log1p(features)
 

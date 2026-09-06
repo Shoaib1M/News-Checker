@@ -1436,3 +1436,56 @@ alternatives rather than chosen once and left.
 
 Neither is worth shipping on its own evidence. Both are worth knowing, and both
 point the same way: this model's ceiling is the task, not the tuning.
+
+### Bug 39 — the credit-history feature leaks the target
+
+`binary_truth_mlp.py`, `tests/test_history_leakage.py`
+
+LIAR's five credit-history counts read as the speaker's *past* record. They
+include **the current statement's own label**. Measured over the 2,054 speakers
+who appear exactly once in the entire dataset:
+
+```
+own-label count == 1    99.2%
+total history  == 1     98.9%
+total history  == 0      0.8%
+```
+
+A speaker with one statement carries exactly one count, sitting in that
+statement's own label column. The feature partly *is* the target, and any
+accuracy trained on it is inflated. **This is where the project's old "72.38%
+on LIAR" came from.** The README had warned the figure was metadata-dependent;
+nobody had named it as leakage.
+
+There is a second-order version. LIAR ships five counts for six labels — there
+is no `true` column — so a solo speaker labelled "true" has all-zero history:
+**352 of the 353** such rows. All-zero history was therefore itself a signal
+for "true". Subtracting the current row removes both, because a solo "false"
+speaker becomes all-zero too.
+
+`build_history_features(..., deleak_labels=...)` subtracts it, so the feature
+means "this speaker's OTHER statements". Solo speakers go from 82.2% carrying
+history to 0.3%. Inference passes no labels — a live claim is in nobody's
+history — and a test asserts the serving path never de-leaks.
+
+### Two models, each labelled with its inputs
+
+`train_speaker_context_model.py` (new)
+
+Conflating two questions is how the project came to publish a number it could
+not defend:
+
+| model | inputs | accuracy | 95% CI | precision | F1 |
+|---|---|---|---|---|---|
+| **Claim-only** (ships) | statement text | 61.88% | [59.12, 64.48] | 62.09% | 0.7106 |
+| **+ speaker context** | statement + metadata + de-leaked history | 64.48% | [61.80, 66.93] | 71.02% | 0.6647 |
+| Majority-class baseline | — | 56.35% | — | — | — |
+
+The first is the only one that answers what the product does — a pasted claim
+carries no speaker metadata. The second is the standard LIAR benchmark setup,
+reported for comparability and never as the system's accuracy. **Their intervals
+overlap**, so the 2.6-point gap is suggestive rather than established, and the
+report says so.
+
+De-leaked speaker context is worth about **+2.6 points**, not the +10 the leaked
+version appeared to give. That difference is the whole point.

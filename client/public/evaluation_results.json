@@ -1791,6 +1791,38 @@
       "classes": "2 (binary)",
       "threshold": 0.49,
       "is_production": true
+    },
+    "binary_mlp_speaker_context": {
+      "name": "Binary Truth MLP + speaker context",
+      "type": "binary",
+      "accuracy": 0.6448,
+      "accuracy_95_ci": [
+        0.618,
+        0.6693
+      ],
+      "precision": 0.7102,
+      "recall": 0.6246,
+      "f1": 0.6647,
+      "confusion_matrix": [
+        [
+          371,
+          182
+        ],
+        [
+          268,
+          446
+        ]
+      ],
+      "labels": [
+        "Fake-ish",
+        "True-ish"
+      ],
+      "architecture": "1 hidden layer (64 neurons, ReLU) \u2192 sigmoid",
+      "input_features": "statement + subject/speaker/job/state/party/context, plus credit history with the current statement removed",
+      "training": "70 epochs, mini-batch SGD (batch=128), threshold on validation",
+      "classes": "2 (binary)",
+      "is_production": false,
+      "note": "The standard LIAR benchmark setup. NOT what the API can do: a pasted claim carries no speaker metadata. Credit history is de-leaked \u2014 LIAR's counts include the current statement's own label, which is where the commonly-quoted 72% figures come from."
     }
   }
 }
