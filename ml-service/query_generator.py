@@ -98,6 +98,15 @@ class QueryGenerator:
         # predicate regex, which returns whatever token it matches first.
         queries.extend(self._generate_action_queries(claim, decomp))
 
+        # 1c. Content-word query, for claims with no named subject at all
+        # ("the vaccine is 95% effective", "a leaked memo shows the CEO
+        # knew"). Almost every other generator here is keyed on an entity, so
+        # without this those claims dispatched two queries: the sentence, and
+        # the same sentence in quotes.
+        keyword_query = self._generate_keyword_query(claim, decomp)
+        if keyword_query:
+            queries.append(keyword_query)
+
         # 2. ENTITY-FOCUSED QUERIES
         # These find articles about the specific entities involved
         if decomp.primary_entities:
@@ -148,6 +157,30 @@ class QueryGenerator:
             key=lambda q: _PURPOSE_RANK.get(q['purpose'], _DEFAULT_RANK)
         )
         return unique_queries[:12]
+
+    def _generate_keyword_query(
+        self, claim: str, decomp: ClaimDecomposition
+    ) -> dict or None:
+        """A bag of the claim's content words, for claims with no named entity.
+
+        Only produced when there is no entity to build a better query from —
+        an entity query beats this whenever one is available.
+        """
+        if decomp.primary_entities:
+            return None
+
+        words = [
+            word for word in re.findall(r"[A-Za-z0-9%$.,]+", claim)
+            if word.lower().strip(".,") not in self.stopwords and len(word) > 2
+        ]
+        if len(words) < 2:
+            return None
+
+        return {
+            'query': " ".join(words[:7]).strip(),
+            'purpose': 'entity_action',   # ranked with the other core queries
+            'priority': 'high',
+        }
 
     def _generate_action_queries(
         self, claim: str, decomp: ClaimDecomposition
@@ -357,20 +390,25 @@ class QueryGenerator:
         return queries
     
     def _generate_factcheck_query(self, decomp: ClaimDecomposition) -> dict or None:
-        """Generate a fact-check specific search."""
-        if not decomp.primary_entities and not decomp.core_predicates:
+        """Generate a fact-check specific search.
+
+        Needs a named subject to be worth sending. Without one the query was
+        built from whatever the predicate regex returned first, producing
+        strings like " 95 fact check verify" — a leading space, a bare number
+        and no subject — which consumes one of the four dispatched slots and
+        finds nothing.
+        """
+        if not decomp.primary_entities:
             return None
-        
-        # Fact-check the main entity/predicate combination
-        key_term = decomp.primary_entities[0] if decomp.primary_entities else ''
+
         # Prefer the claim's actual event word over the first regex-derived
         # predicate: "India resigned fact check" finds the story,
         # "India morning fact check" finds nothing.
         actions = surface_forms_in(decomp.original_claim)
-        if actions:
-            key_term += f' {actions[0]}'
-        elif decomp.core_predicates:
-            key_term += f' {decomp.core_predicates[0]}'
+        action = actions[0] if actions else (
+            decomp.core_predicates[0] if decomp.core_predicates else ""
+        )
+        key_term = f"{decomp.primary_entities[0]} {action}".strip()
         
         if key_term:
             return {

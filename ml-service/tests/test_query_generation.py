@@ -155,3 +155,71 @@ class TestEventVocabulary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestEntitylessClaims(QueryCaseMixin, unittest.TestCase):
+    """Claims with no named subject at all.
+
+    Almost every generator here is keyed on an entity, so a claim like "the
+    vaccine is 95% effective" dispatched two queries: the sentence, and the
+    same sentence in quotes. Meanwhile the fact-check generator built its
+    query from whatever the predicate regex returned first, producing
+    " 95 fact check verify" — a leading space, a bare number, no subject.
+    """
+
+    ENTITYLESS = [
+        "The vaccine is 95% effective according to the trial",
+        "Officials said the bridge collapsed overnight",
+        "A leaked memo shows the CEO knew about the defect",
+    ]
+
+    def test_a_content_word_query_is_generated(self):
+        for claim in self.ENTITYLESS:
+            with self.subTest(claim=claim):
+                self.assertGreaterEqual(len(self.dispatched(claim)), 2)
+                self.assertIn("entity_action", self.purposes(claim))
+
+    def test_no_query_is_malformed(self):
+        for claim in self.ENTITYLESS:
+            for query in self.dispatched(claim):
+                with self.subTest(claim=claim, query=query):
+                    self.assertEqual(query, query.strip(), "leading/trailing space")
+                    self.assertGreater(len(query.split()), 1, "a one-token query")
+
+    def test_no_fact_check_query_without_a_subject(self):
+        """"' 95 fact check verify' finds nothing and costs a dispatched slot."""
+        for claim in self.ENTITYLESS:
+            with self.subTest(claim=claim):
+                self.assertNotIn("fact_check", self.purposes(claim))
+
+    def test_claims_with_an_entity_still_prefer_entity_queries(self):
+        claim = "The prime minister of India resigned this morning"
+        queries = self.dispatched(claim)
+        self.assertTrue(any("India" in q for q in queries))
+
+
+class TestCollectiveNounsAreNotEntities(unittest.TestCase):
+    """English capitalises the first word of a sentence."""
+
+    def entities(self, claim):
+        from claim_decomposer import decompose_claim
+        return decompose_claim(claim).primary_entities
+
+    def test_a_sentence_initial_role_noun_is_not_an_entity(self):
+        for claim, absent in (
+            ("Scientists discovered a new species in the Amazon", "Scientists"),
+            ("Officials said the bridge collapsed overnight", "Officials"),
+            ("Reports suggest the merger will be blocked", "Reports"),
+            ("Police arrested three people in London", "Police"),
+        ):
+            with self.subTest(claim=claim):
+                self.assertNotIn(absent, self.entities(claim))
+
+    def test_real_names_containing_one_are_kept_whole(self):
+        self.assertIn("Metropolitan Police",
+                      self.entities("Metropolitan Police arrested three people in London"))
+        self.assertIn("Doctors Without Borders",
+                      self.entities("Doctors Without Borders opened a clinic in Sudan"))
+
+    def test_the_real_entity_in_the_claim_survives(self):
+        self.assertIn("Amazon", self.entities("Scientists discovered a new species in the Amazon"))

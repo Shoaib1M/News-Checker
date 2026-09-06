@@ -42,6 +42,19 @@ _CAPITALIZED_NON_ENTITIES = {
     'With', 'From', 'It', 'Its', 'All', 'Across', 'After', 'Before', 'Not',
     'No', 'New', 'Now', 'Will', 'Would', 'Can', 'Could', 'May', 'Might',
     'Said', 'Says', 'According',
+    # Collective and role nouns. English capitalises the first word of a
+    # sentence, so "Scientists discovered a new species in the Amazon" yielded
+    # the entities ['Scientists', 'Amazon'] — and "Scientists" then had to be
+    # matched in a document for the entity score to reach 1.0, while also
+    # producing queries built around it. These are matched as whole captured
+    # phrases, so a real name containing one ("Metropolitan Police",
+    # "Doctors Without Borders") is unaffected.
+    'Scientists', 'Researchers', 'Officials', 'Reports', 'Sources', 'Experts',
+    'Doctors', 'Police', 'Lawmakers', 'Regulators', 'Analysts', 'Investors',
+    'Authorities', 'Witnesses', 'Residents', 'Students', 'Workers',
+    'Employees', 'Customers', 'Users', 'Voters', 'Citizens', 'Critics',
+    'Supporters', 'Protesters', 'Media', 'News', 'Study', 'Studies', 'Data',
+    'People', 'Members', 'Leaders', 'Politicians', 'Journalists', 'Activists',
 }
 
 
