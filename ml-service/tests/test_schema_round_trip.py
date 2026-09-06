@@ -29,6 +29,8 @@ REPO_ROOT = SERVICE_DIR.parent
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
+from pydantic import BaseModel  # noqa: E402
+
 import main  # noqa: E402
 
 
@@ -37,14 +39,25 @@ def camel(snake: str) -> str:
     return head + "".join(word.capitalize() for word in rest)
 
 
-# The nested blocks of CheckResponse, and where each is persisted.
-RESPONSE_BLOCKS = {
-    "verification": main.VerificationInfo,
-    "ml": main.MLInfo,
-    "retrieval": main.RetrievalInfo,
-    "nli": main.NLIInfo,
-    "evidence": main.EvidenceSummary,
-}
+def _nested_blocks() -> dict:
+    """Every nested model on CheckResponse, discovered rather than listed.
+
+    This was a hand-written dict, and it drifted the moment a block was added:
+    `coverage` was introduced on CheckResponse, was not added here, and the
+    guard therefore reported that every field round-tripped while the whole
+    block was being dropped between the live check and the saved one. A
+    drift test maintained by hand has the same failure mode as the
+    duplicated rule it exists to catch.
+    """
+    blocks = {}
+    for name, field in main.CheckResponse.model_fields.items():
+        annotation = field.annotation
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            blocks[name] = annotation
+    return blocks
+
+
+RESPONSE_BLOCKS = _nested_blocks()
 
 
 class TestResponseFieldsSurviveHistory(unittest.TestCase):

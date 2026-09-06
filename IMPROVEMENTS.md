@@ -1020,3 +1020,51 @@ Neither `npm run build`, eslint, nor the render smoke test can see this: the
 element is present, visible, and correctly sized. It was found by screenshotting
 the component and looking at it, and confirmed by reading the computed style —
 `color: rgb(124, 58, 237)` on `background: rgb(124, 58, 237)`.
+
+### Bug 31 — normalisation deleted the recency signal it was standing next to
+
+`claim_normalizer.py`, `claim_recency.py`, `main.py`
+
+Created by combining two individually correct features. The normaliser strips
+the wire-service label off the front of a submission, which is right for
+search — `BREAKING:` is packaging, not proposition, and useless as a query
+term. But mode detection then ran on the **normalised** text:
+
+```
+"BREAKING: The United States banned Google"
+  normalised -> "The United States banned Google"
+  mode       -> historical
+```
+
+So every pasted breaking headline — the single most common way a fresh claim
+arrives — searched with no date window and accepted coverage of any age. Two
+separate faults: the labels that *were* recency markers got stripped before
+detection could see them, and `JUST IN` / `URGENT` were never markers at all.
+
+The time anchor is now read from the **original submission** as well as the
+normalised claim. Only labels that say *when* count — `breaking`, `just in`,
+`urgent`, `developing`, `update`, `alert`, `live`. `EXCLUSIVE`, `ANALYSIS` and
+`OPINION` say what kind of piece it is, not when it happened, and are pinned
+as not forcing recent mode.
+
+### Bug 32 — the drift guard had the defect it exists to catch
+
+`ml-service/tests/test_schema_round_trip.py`
+
+The round-trip guard walked a **hand-written** dict of the nested blocks on
+`CheckResponse`. `coverage` was added as a new block and not added to that
+dict, so the guard reported every field round-tripping while the entire block
+was dropped between the live check and the saved one — the live path passes
+the whole response through, and only the history replay reconstructs it field
+by field, so the loss was invisible until someone opened a saved check.
+
+A drift test maintained by hand has exactly the failure mode of the duplicated
+rule it exists to catch, which is now the fourth instance of that pattern in
+this codebase. The blocks are discovered from `CheckResponse.model_fields`
+instead. Turning it on immediately reported all five `coverage` fields as
+missing from `routes/check.js`, `models/Check.js` and the history mapper in
+`App.jsx` — all three now carry them.
+
+The result panel also states which slice was searched and why — *"Searched the
+last 30 days — it was submitted as BREAKING"* — and says so when sources were
+found but set aside as too old.

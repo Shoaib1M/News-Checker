@@ -140,6 +140,15 @@ const checkSchema = new mongoose.Schema(
       verdict: String,
       threshold: Number,
     },
+    // Which slice of coverage was searched, and why. Without this a
+    // replayed check cannot say whether only the last month was read.
+    coverage: {
+      mode: String,               // recent | historical
+      requested: String,          // what the user asked for
+      windowDays: Number,         // days searched, absent when unlimited
+      reason: String,             // why this mode was chosen
+      staleEvidenceCount: Number, // found, but too old to be reporting it
+    },
     retrieval: {
       status: String,
       candidateCount: Number,

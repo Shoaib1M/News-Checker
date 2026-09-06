@@ -234,6 +234,12 @@ class TestThroughTheApi(unittest.TestCase):
         self.check(UNDATED_CLAIM, mode="recent", published=NOW)
         self.assertEqual(self.asked_for, RECENT_WINDOW_DAYS)
 
+    def test_a_pasted_breaking_headline_gets_a_date_window(self):
+        """End to end: the label reaches retrieval, not just resolve_mode."""
+        self.check("BREAKING: The prime minister of India resigned",
+                   published=NOW)
+        self.assertEqual(self.asked_for, RECENT_WINDOW_DAYS)
+
     def test_the_response_says_which_mode_ran_and_why(self):
         coverage = self.check(RECENT_CLAIM, published=NOW)["coverage"]
         self.assertEqual(coverage["mode"], "recent")
@@ -251,3 +257,71 @@ class TestThroughTheApi(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTheWireLabelSurvivesNormalisation(unittest.TestCase):
+    """A bug created by combining two correct features.
+
+    Normalisation strips the wire-service label off the front of a submission,
+    which is right for search — "BREAKING:" is packaging, not proposition, and
+    useless as a query term. But mode detection then ran on the normalised
+    text, and that label is the strongest thing a pasted headline says about
+    WHEN. Measured before the fix:
+
+        "BREAKING: The United States banned Google"
+          normalised -> "The United States banned Google"
+          mode       -> historical
+
+    So every pasted headline — the single most common way a breaking-news
+    claim arrives — searched without a date window and accepted coverage of
+    any age. Two separate faults: the labels that WERE recency markers were
+    stripped before detection, and "JUST IN"/"URGENT" were never markers.
+    """
+
+    RECENCY_LABELS = [
+        "BREAKING: The United States banned Google",
+        "JUST IN: The prime minister of India resigned",
+        "DEVELOPING: Three people died in the collapse",
+        "URGENT: The central bank raised interest rates",
+        "UPDATE: The minister has now resigned",
+    ]
+
+    # Labels that say what KIND of piece it is, not when it happened.
+    NON_TIME_LABELS = [
+        "EXCLUSIVE: an internal memo shows the CEO knew",
+        "ANALYSIS: what the ruling means for the tech industry",
+        "OPINION: the ban would be a mistake",
+    ]
+
+    def resolve(self, raw):
+        from claim_normalizer import normalize_claim
+        return resolve_mode(normalize_claim(raw), "auto", submitted=raw)
+
+    def test_the_label_is_stripped_from_the_claim(self):
+        """The premise: the signal really is gone from the normalised text."""
+        from claim_normalizer import normalize_claim
+        for raw in self.RECENCY_LABELS:
+            with self.subTest(raw=raw):
+                normalised = normalize_claim(raw)
+                self.assertNotIn("BREAKING", normalised.upper()[:12])
+                self.assertEqual(resolve_mode(normalised).mode, "historical")
+
+    def test_a_pasted_breaking_headline_still_runs_in_recent_mode(self):
+        for raw in self.RECENCY_LABELS:
+            with self.subTest(raw=raw):
+                self.assertEqual(self.resolve(raw).mode, "recent")
+
+    def test_a_label_that_is_not_about_time_does_not_force_recent(self):
+        for raw in self.NON_TIME_LABELS:
+            with self.subTest(raw=raw):
+                self.assertEqual(self.resolve(raw).mode, "historical")
+
+    def test_the_explanation_says_where_the_signal_came_from(self):
+        self.assertIn("BREAKING", self.resolve(self.RECENCY_LABELS[0]).reason)
+        self.assertIn("this morning", self.resolve(RECENT_CLAIM).reason)
+
+    def test_an_explicit_mode_still_overrides_the_label(self):
+        from claim_normalizer import normalize_claim
+        raw = self.RECENCY_LABELS[0]
+        resolved = resolve_mode(normalize_claim(raw), "historical", submitted=raw)
+        self.assertEqual(resolved.mode, "historical")

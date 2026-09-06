@@ -192,6 +192,13 @@ router.post("/", optionalAuth, async (req, res) => {
             verdict: result.ml.verdict,
             threshold: result.ml.threshold,
           },
+          coverage: result.coverage && {
+            mode: result.coverage.mode,
+            requested: result.coverage.requested,
+            windowDays: result.coverage.window_days,
+            reason: result.coverage.reason,
+            staleEvidenceCount: result.coverage.stale_evidence_count,
+          },
           retrieval: result.retrieval && {
             status: result.retrieval.status,
             candidateCount: result.retrieval.candidate_count,

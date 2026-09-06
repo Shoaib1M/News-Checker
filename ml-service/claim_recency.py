@@ -39,6 +39,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from claim_normalizer import leading_label, signals_recency
+
 # The boundary between the two modes, in days. A claim in RECENT mode is about
 # something inside this window, and retrieval asks every provider that supports
 # a date filter for exactly this window.
@@ -84,6 +86,9 @@ class ClaimTime:
     anchor: str          # "recent" | "dated" | "none"
     marker: str = ""     # the phrase that decided it, for the explanation
     requested: str = AUTO  # what the caller asked for
+    # True when the marker came from the submission's wire label rather than
+    # the claim's own words, which the explanation has to word differently.
+    from_label: bool = False
 
     @property
     def is_recent(self) -> bool:
@@ -102,6 +107,8 @@ class ClaimTime:
     def reason(self) -> str:
         if self.requested != AUTO:
             return f"you selected {self.mode} coverage"
+        if self.marker and self.from_label:
+            return f'it was submitted as "{self.marker.upper()}"' 
         if self.marker:
             return f'the claim says "{self.marker}"'
         if self.anchor == "dated":
@@ -120,13 +127,25 @@ def detect_anchor(claim: str) -> ClaimTime:
     return ClaimTime(anchor="none")
 
 
-def resolve_mode(claim: str, requested: str = AUTO) -> ClaimTime:
+def resolve_mode(
+    claim: str, requested: str = AUTO, submitted: str | None = None
+) -> ClaimTime:
     """Decide which mode this check runs in.
 
     An explicit choice always wins. Auto-detection is a convenience, and it
     can only read the words in the claim: "the PM resigned" is a claim about
     today for someone who just saw it on television, and no amount of parsing
     reveals that. The person checking knows; the parser does not.
+
+    ``submitted`` is the user's ORIGINAL text, before normalisation, and it
+    must be passed wherever it exists. Normalisation strips the wire-service
+    label off the front of a submission — which is correct for search, since
+    "BREAKING:" is packaging rather than proposition, and useless as a query
+    term. But that label is the strongest statement about WHEN a submission
+    has: "BREAKING: the US banned Google" is a claim about today, and the
+    sentence surviving normalisation is not. Detecting on the normalised text
+    alone therefore threw away the signal, and every pasted headline ran in
+    historical mode.
     """
     requested = (requested or AUTO).strip().lower()
     if requested not in MODES:
@@ -135,7 +154,16 @@ def resolve_mode(claim: str, requested: str = AUTO) -> ClaimTime:
         return ClaimTime(anchor="recent", marker="", requested=RECENT)
     if requested == HISTORICAL:
         return ClaimTime(anchor="none", marker="", requested=HISTORICAL)
-    return detect_anchor(claim)
+
+    detected = detect_anchor(claim)
+    if detected.is_recent:
+        return detected
+    # The claim's own words said nothing about time; the packaging may have.
+    if submitted and signals_recency(submitted):
+        return ClaimTime(
+            anchor="recent", marker=leading_label(submitted), from_label=True
+        )
+    return detected
 
 
 def claim_time_anchor(claim: str) -> ClaimTime:

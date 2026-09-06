@@ -343,6 +343,13 @@ function App() {
           verdict: full.ml.verdict,
           threshold: full.ml.threshold,
         },
+        coverage: full.coverage && {
+          mode: full.coverage.mode,
+          requested: full.coverage.requested,
+          window_days: full.coverage.windowDays,
+          reason: full.coverage.reason,
+          stale_evidence_count: full.coverage.staleEvidenceCount,
+        },
         retrieval: full.retrieval && {
           status: full.retrieval.status,
           candidate_count: full.retrieval.candidateCount,
@@ -585,6 +592,23 @@ function App() {
                       Retrieval: {candidates} candidate{candidates === 1 ? "" : "s"} ·{" "}
                       {relevant} on-topic · {result.nli?.classified_count ?? 0} checked against the claim
                     </p>
+                    {/* Which slice of coverage was searched. Worth stating even
+                        when the user picked the mode, and necessary when they
+                        left it on Auto: a thin result reads very differently
+                        once you know only the last 30 days was searched. */}
+                    {result.coverage && (
+                      <p className="assessment-note">
+                        {result.coverage.window_days
+                          ? `Searched the last ${result.coverage.window_days} days`
+                          : "Searched without a date limit"}
+                        {result.coverage.reason ? ` — ${result.coverage.reason}` : ""}
+                        {result.coverage.stale_evidence_count > 0 && (
+                          `. ${result.coverage.stale_evidence_count} source` +
+                          `${result.coverage.stale_evidence_count === 1 ? " was" : "s were"}` +
+                          ` found but published too long ago to be reporting this.`
+                        )}
+                      </p>
+                    )}
                     {retrievalStatus === "SEARCH_FAILED" && (
                       <p className="assessment-note">
                         Search providers could not be reached, so nothing here reflects on the claim itself.

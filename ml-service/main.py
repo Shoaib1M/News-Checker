@@ -724,7 +724,10 @@ def check_statement(request: CheckRequest):
     # what the UI shows and what history stores; only the machinery sees the
     # normalised form.
     statement = normalize_claim(submitted)
-    claim_time = resolve_mode(statement, request.mode)
+    # The ORIGINAL text, not just the normalised claim: normalisation
+    # strips the wire label off the front, and that label is the strongest
+    # thing a pasted headline says about when the event happened.
+    claim_time = resolve_mode(statement, request.mode, submitted=submitted)
 
     # --- 1. ML Prediction Phase ---
     # Convert text into a numerical array (TF-IDF features)
