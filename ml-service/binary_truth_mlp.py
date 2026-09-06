@@ -57,18 +57,35 @@ class BinaryTruthMLP:
         epochs=40,
         batch_size=128,
         seed=42,
+        weight_decay=0.0,
+        early_stopping_patience=None,
     ):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.lr = learning_rate
         self.epochs = epochs
         self.batch_size = batch_size
-        
+        # L2 penalty on the weight matrices. 0.0 reproduces the original
+        # behaviour: no regularisation at all, on 26,626 input dimensions and
+        # roughly ten thousand training rows.
+        self.weight_decay = weight_decay
+        # Stop when validation loss has not improved for this many reporting
+        # rounds, and restore the best weights seen. None runs every epoch
+        # regardless of what validation is doing.
+        self.early_stopping_patience = early_stopping_patience
+
         # The threshold determines where we draw the line between False and True.
         # It defaults to 0.5 (50%), but we "tune" it during training to find the best cutoff.
         self.best_threshold = 0.5
 
+        # One generator for BOTH weight init and batch shuffling. The shuffle
+        # used np.random.permutation — the global RNG — so `seed` controlled
+        # only the initial weights and every run trained on a different batch
+        # order. Two runs of the same configuration could differ by more than
+        # the effects being measured, which makes an experiment unreadable and
+        # contradicts the README's "reproduce these numbers with".
         rng = np.random.default_rng(seed)
+        self._rng = rng
         
         # Layer 1 (Input -> Hidden)
         self.W1 = rng.normal(0, np.sqrt(2 / input_size), (input_size, hidden_size))
@@ -111,11 +128,19 @@ class BinaryTruthMLP:
             (1 - actual) * np.log(1 - predicted)
         )
 
-    def fit(self, X, y, X_valid=None, y_valid=None):
+    def fit(self, X, y, X_valid=None, y_valid=None, quiet=False):
         n_samples = X.shape[0]
+        # Stopping is driven by validation LOSS, not accuracy: accuracy
+        # moves in discrete jumps on 1284 rows, so a plateau looks like
+        # an improvement. Loss is continuous and registers growing
+        # overconfidence before any label actually flips.
+        best_valid_loss = None
+        rounds_without_improvement = 0
+        best_weights = None
+        valid_loss = None
 
         for epoch in range(1, self.epochs + 1):
-            indices = np.random.permutation(n_samples)
+            indices = self._rng.permutation(n_samples)
             X_shuffled = X[indices]
             y_shuffled = y[indices].reshape(-1, 1)
 
@@ -140,10 +165,37 @@ class BinaryTruthMLP:
                 db1 = np.sum(dz1, axis=0, keepdims=True)
 
                 # --- UPDATE WEIGHTS ---
+                # Weight decay is applied to the weight matrices only, never
+                # the biases: penalising a bias just shifts the decision
+                # boundary without reducing model capacity.
+                if self.weight_decay:
+                    dW2 = dW2 + self.weight_decay * self.W2
+                    dW1 = dW1 + self.weight_decay * self.W1
                 self.W2 -= self.lr * dW2
                 self.b2 -= self.lr * db2
                 self.W1 -= self.lr * dW1
                 self.b1 -= self.lr * db1
+
+            # Early stopping needs the VALIDATION loss every epoch. It does
+            # not need the training-set forward pass that reporting does, and
+            # on 10,240 rows by 26,626 features that pass costs more than the
+            # epoch itself — forcing the whole reporting block every epoch to
+            # get this check roughly tripled training time.
+            if (self.early_stopping_patience is not None
+                    and X_valid is not None and y_valid is not None):
+                epoch_valid_loss = self.loss(self.predict_proba(X_valid), y_valid)
+                if best_valid_loss is None or epoch_valid_loss < best_valid_loss - 1e-5:
+                    best_valid_loss = epoch_valid_loss
+                    rounds_without_improvement = 0
+                    best_weights = (self.W1.copy(), self.b1.copy(),
+                                    self.W2.copy(), self.b2.copy())
+                else:
+                    rounds_without_improvement += 1
+                    if rounds_without_improvement >= self.early_stopping_patience:
+                        if not quiet:
+                            print(f"  early stop at epoch {epoch} "
+                                  f"(best valid loss {best_valid_loss:.4f})")
+                        break
 
             # Reporting
             should_report = epoch == 1 or epoch % 5 == 0
@@ -168,7 +220,13 @@ class BinaryTruthMLP:
                         f"threshold: {valid_threshold:.2f}"
                     )
 
-                print(message)
+                if not quiet:
+                    print(message)
+
+        # Restore the weights that generalised best, not the ones the last
+        # epoch happened to leave behind.
+        if best_weights is not None:
+            self.W1, self.b1, self.W2, self.b2 = best_weights
 
         # After training finishes, find the absolute best cutoff line based on validation data
         if X_valid is not None and y_valid is not None:

@@ -1270,3 +1270,62 @@ A number in prose has no drift guard, which is why the sweep was worth doing.
 The figures that *do* have guards — the response schema, the non-numeric
 statuses, the stance rule, the evaluation feature path — are the ones that
 have stayed correct.
+
+### Bug 36 — training was not reproducible
+
+`binary_truth_mlp.py`
+
+`__init__` seeded a generator for the initial weights, but the per-epoch
+shuffle used `np.random.permutation` — the **global** RNG. So `seed` controlled
+only where training started, and two runs of the same configuration trained on
+different batch orders and produced different models. The README told readers
+to "reproduce these numbers"; they could not, and no experiment comparing
+configurations could be read, because runs differed by more than the effects
+being measured.
+
+One generator now drives both weight initialisation and shuffling. A test
+seeds numpy globally to two different values between runs and asserts the model
+is unchanged.
+
+### Regularisation and early stopping, as opt-in knobs
+
+`binary_truth_mlp.py`
+
+The training loop had neither, on 26,626 input dimensions over ~10,240 rows,
+and kept whatever weights the final epoch happened to leave behind.
+
+- `weight_decay` applies L2 to the weight matrices only — penalising a bias
+  shifts the decision boundary without reducing capacity, and a test asserts
+  the update touches `W1`/`W2` and not `b1`/`b2`.
+- `early_stopping_patience` stops on validation **loss**, not accuracy:
+  accuracy moves in discrete jumps on 1284 rows, so a plateau reads as an
+  improvement, while loss registers growing overconfidence before any label
+  flips. The best weights seen in the run are restored.
+
+Both default to off, so the shipped model's behaviour is unchanged until an
+experiment turns them on.
+
+**A performance bug in the first version of this:** enabling early stopping
+forced the whole reporting block every epoch, which includes a forward pass
+over the *training* set — on 10,240 × 26,626 that pass costs more than the
+epoch, and it roughly tripled training time. Early stopping needs only the
+validation loss; separating the two brought the overhead down to ~22%.
+
+**A wrong test, corrected:** the first version asserted that an early-stopped
+model beats one trained longer. It failed by 0.0005, and it deserved to —
+that is not what early stopping promises. Patience can halt on a noisy dip the
+longer run later climbs out of. The guarantee is within-run: the weights left
+behind are the best ones *that run* saw. The test now records validation loss
+each epoch and asserts the final model matches the minimum.
+
+### `train_experiments.py` — choosing a model without cheating
+
+New. Trains variants of the MLP and picks one under a rule the script enforces:
+**variants are selected on VALIDATION; the test set is touched once, by the
+winner, at the end.**
+
+Running six variants and shipping whichever scored best on test is overfitting
+the test set with extra steps — the reported number would describe the sweep
+rather than the model. A variant also only displaces the incumbent if it clears
+the incumbent's validation confidence interval; anything inside it is noise,
+and swapping models on noise means retraining forever while the number wanders.
