@@ -41,6 +41,7 @@ from binary_truth_mlp import (
     load_artifacts,
     make_prediction_features,
 )
+from claim_normalizer import normalize_claim
 from claim_triage import triage_claim
 from claim_verifier import extract_claims
 from evidence_aggregator import assess_coverage, count_independent_groups
@@ -670,7 +671,22 @@ def check_statement(request: CheckRequest):
         raise HTTPException(status_code=503, detail="Model not loaded yet.")
 
     start = time.time()
-    statement = request.statement.strip()
+    submitted = request.statement.strip()
+
+    # --- 0. Normalise the submission into the proposition it contains ---
+    # People submit what they saw, with the framing they saw it in: "is it
+    # true that X?", "BREAKING: X!!!", a pasted URL in front of X, a headline
+    # in quotes with "- Reuters, March 2024" after it. Every stage below reads
+    # the claim — triage, entity extraction, query generation, and NLI, which
+    # uses it as the hypothesis — so the packaging reached all of them. "Is it
+    # true that the prime minister of India resigned?" was triaged as
+    # `not_a_claim` and never searched: the most natural way to ask a
+    # fact-checker a question, answered with "no verifiable claim found".
+    #
+    # `submitted` stays the user's own words. It is what the response echoes,
+    # what the UI shows and what history stores; only the machinery sees the
+    # normalised form.
+    statement = normalize_claim(submitted)
 
     # --- 1. ML Prediction Phase ---
     # Convert text into a numerical array (TF-IDF features)
@@ -866,7 +882,7 @@ def check_statement(request: CheckRequest):
 
     # --- 5. Build response ---
     return CheckResponse(
-        statement=statement,
+        statement=submitted,
         claim_type=(
             knowledge_assessment["claim_type"] if knowledge_assessment
             else triage.claim_type

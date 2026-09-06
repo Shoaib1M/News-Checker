@@ -870,3 +870,43 @@ document that takes no position `"neutral"` while the rule returns
 `"unclear"`, so every correctly-classified neutral row — the largest group —
 was scored as an error, understating accuracy exactly where the corpus is
 densest.
+
+### Bug 27 — the most natural way to ask a fact-checker a question was refused
+
+`claim_normalizer.py` (new), `main.py`
+
+Every stage reads the claim: triage, entity extraction, query generation, and
+NLI, which uses it as the hypothesis. All of them were reading the **raw
+submission** — and people do not submit propositions. They submit what they
+saw, with the framing they saw it in. Measured against the real stages:
+
+| submitted | what broke |
+|---|---|
+| `is it true that the prime minister of india resigned?` | triaged `not_a_claim`, `search_worthwhile=False` — **never searched at all** |
+| `https://twitter.com/x/status/123 The PM of India resigned` | entities `['India', 'Twitter']`; a dispatched query was `India Twitter resigned` |
+| `"Google banned in US" - Reuters, March 2024` | entities `['Google', 'Reuters', 'March', 'United States']`; a dispatched query was `Google Reuters banned` |
+| `🚨🚨 GOOGLE BANNED IN ALL US CITIES 🚨🚨 #breaking` | the first dispatched query is the submission itself, so the emoji and hashtags went verbatim to a news index |
+
+The first row is the serious one. "Is it true that …?" is how people ask a
+fact-checker a question, and the answer was *"no verifiable claim found"* —
+which reads as "your input was gibberish" rather than "I did not look".
+
+`normalize_claim` removes wire labels, pasted URLs, hashtags, handles, emoji,
+trailing source attributions, wrapping quotes, repeated emphasis punctuation
+and conversational framing. The user's own text is untouched in the response,
+the UI and history; only the machinery sees the normalised form.
+
+**The risk runs the other way, and that is most of the file.** A normaliser
+that trims one word too many answers a different question from the one asked,
+so negation, hedges and quantifiers are never touched, `"It is true that X"`
+(an assertion) is left alone where `"Is it true that X?"` (a question about X)
+is unwrapped, a real question like *"Why did the prime minister resign?"* is
+still correctly refused, `"Reuters reported that the PM resigned"` keeps its
+attribution because there the attribution **is** the claim, and a submission
+that is nothing but packaging is returned unchanged so triage can say so.
+Emoji are stripped by Unicode category rather than a codepoint range, which is
+what keeps accented letters and non-Latin scripts intact.
+
+Writing the tests found a bug in the normaliser: a trailing "can someone
+confirm" was removed without the comma before it, and that comma then
+travelled into every dispatched query.
