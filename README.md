@@ -150,6 +150,43 @@ flowchart TD
     K -->|no| J[Verdict + confidence + evidence list]
 ```
 
+### Worked example: a viral false claim
+
+This is the situation the system exists for, and the one where a lexical
+retriever fails hardest — because the posts repeating a false claim use its
+exact wording, while the sources debunking it use their own.
+
+Given the claim *"The United States banned Google across all its cities"* and a
+realistic evidence pool of **eight low-quality posts repeating it** plus **two
+credible sources refuting it**:
+
+```
+VERDICT : evidence contradicts the claim   ·   medium confidence
+
+  contradicts   fact-check     Fact check: the US has not banned Google
+  contradicts   reporting      No US prohibition on Google, regulators confirm
+  supports      unclassified   Google banned in all United States cities, users say
+  supports      unclassified   Google ban rumours spread across all US cities
+  supports      unclassified   US cities Google ban: everything we know
+  ... 3 more unclassified
+
+supporting 6 · contradicting 2 · independent publishers backing the verdict: 2
+```
+
+**Six sources "support" the claim and the verdict is still `contradicted`.**
+Source tiering means a fact-check and a wire report outweigh six anonymous
+blogs, and the reported publisher count is the *verdict's own* side — not the
+larger one.
+
+Getting there requires several things to hold at once, each of which was
+broken at some point and is now pinned by
+[`tests/test_misinformation_scenario.py`](ml-service/tests/test_misinformation_scenario.py):
+the dispatched queries have to contain the claim's verb; the credible sources
+have to survive selection despite ranking below the rumours on lexical
+relevance; the fact-check's *quotation* of the claim must not count as
+supporting it; the debunking headline must not be deduplicated against the
+rumour it contradicts; and neutral coverage must not dilute the direction.
+
 ## Design principles
 
 These are the non-negotiable rules the codebase is built around — they were the direct fixes for real bugs found during development, not aspirational goals:
