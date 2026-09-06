@@ -117,6 +117,41 @@ STANCE_THRESHOLD = 0.35
 # 0.72 read as a confident "supports".
 STANCE_DOMINANCE = 1.6
 
+
+def decide_stance(
+    support_score: float,
+    contradiction_score: float,
+    threshold: float = STANCE_THRESHOLD,
+    dominance: float = STANCE_DOMINANCE,
+) -> str:
+    """Turn a document's two NLI scores into the position it takes.
+
+    A document that both entails and contradicts the claim somewhere is not
+    evidence for either side — it is a document discussing the dispute, and
+    the honest label is "unclear". Requiring a margin is what makes that
+    possible: without one, 0.80 against 0.75 read as a confident "supports".
+
+    The thresholds are parameters rather than constants read from the module
+    so that `stance_sweep.py` measures THIS rule at different settings instead
+    of a reimplementation of it. Three separate rules in this codebase have
+    drifted from their copies; a sweep against a copy would report on a
+    decision procedure the system does not use.
+    """
+    supports = support_score > threshold
+    contradicts = contradiction_score > threshold
+    if supports and contradicts:
+        # Both directions present: one must clearly dominate.
+        if support_score >= contradiction_score * dominance:
+            return "supports"
+        if contradiction_score >= support_score * dominance:
+            return "contradicts"
+        return "unclear"
+    if supports:
+        return "supports"
+    if contradicts:
+        return "contradicts"
+    return "unclear"
+
 # Passages that REPORT a claim rather than assert it. Debunking articles are
 # built out of these — "Posts claim the US banned Google in all its cities" —
 # and an NLI model scores them as strongly entailing the claim, because the
@@ -349,32 +384,8 @@ def run_pipeline(
                 )
                 best_sentence = passages[best_idx] if best_idx < len(passages) else ""
 
-        # Determine stance.
-        #
-        # A document that both entails and contradicts the claim somewhere is
-        # not evidence for either side — it is a document discussing the
-        # dispute, and the honest label is "unclear". Requiring a margin is
-        # what makes that possible: without one, 0.80 against 0.75 read as a
-        # confident "supports".
-        if nli_available:
-            supports = support_score > STANCE_THRESHOLD
-            contradicts = contradiction_score > STANCE_THRESHOLD
-            if supports and contradicts:
-                # Both directions present: one must clearly dominate.
-                if support_score >= contradiction_score * STANCE_DOMINANCE:
-                    stance = "supports"
-                elif contradiction_score >= support_score * STANCE_DOMINANCE:
-                    stance = "contradicts"
-                else:
-                    stance = "unclear"
-            elif supports:
-                stance = "supports"
-            elif contradicts:
-                stance = "contradicts"
-            else:
-                stance = "unclear"
-        else:
-            stance = "unclear"
+        stance = decide_stance(support_score, contradiction_score) if nli_available \
+            else "unclear"
 
         # A document that states a DIFFERENT figure cannot be the source that
         # confirms the claim's, however strongly it entails on wording. This

@@ -829,3 +829,44 @@ The block-boundary step matters more than it looks: without it the nav bar ran
 straight into the lede — *"Home World Business Sport The minister resigned on
 Tuesday."* — as a single unsplittable sentence, so the navigation could not be
 filtered off the front of the story.
+
+### Tuning the stance thresholds — the tool, and why not the numbers
+
+`stance_sweep.py` (new), `evidence_pipeline.decide_stance` (extracted)
+
+`STANCE_THRESHOLD` (0.35) and `STANCE_DOMINANCE` (1.6) decide, for every
+document the system reads, whether it counts as supporting the claim,
+contradicting it, or neither. They were chosen by hand, and changing them by
+hand is how a fact-checker quietly starts giving different answers — the tests
+pin the *rule*, not the settings.
+
+**I could not measure them here.** `huggingface.co` is blocked from this
+sandbox by the same proxy policy that blocks the news hosts (403 on CONNECT),
+so the NLI model cannot be downloaded and no real score exists to sweep. Any
+number I moved these to would have been intuition dressed up as tuning, which
+is the opposite of how the relevance threshold was settled. They are unchanged.
+
+What is shipped instead is the measurement: a 23-pair labelled corpus and a
+grid sweep over both constants, reporting per-direction precision and recall
+and a column counting **invented positions** — documents recorded as taking a
+stance they do not take. That column matters more than accuracy, because the
+two errors are not symmetric: too low a threshold manufactures confirmations
+out of coverage that said nothing, too high a one reports "insufficient
+evidence" about a claim the sources addressed, and a wrong answer is worse than
+no answer. The corpus is deliberately majority-neutral — most of what retrieval
+returns takes no position, and a corpus of clean entailment pairs would tune
+for a distribution the system never sees.
+
+The rule itself was extracted from the middle of the pipeline into
+`decide_stance(support, contradiction, threshold, dominance)` so the sweep
+measures the shipped decision rather than a copy of it. Three rules in this
+codebase have already drifted from their duplicates; a sweep against a
+reimplementation would report on a procedure the system does not run. Two
+tests guard it: one asserts the pipeline calls the function, another that no
+second copy of the comparison survives in the file.
+
+Writing the sweep's own tests found a bug in the sweep: the corpus labels a
+document that takes no position `"neutral"` while the rule returns
+`"unclear"`, so every correctly-classified neutral row — the largest group —
+was scored as an error, understating accuracy exactly where the corpus is
+densest.

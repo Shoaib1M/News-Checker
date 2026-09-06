@@ -528,7 +528,27 @@ cd ml-service && python check_providers.py
 # broken — when in fact no search ran. This separates those two cases in about
 # ten seconds.
 
-# Server — 17 tests: auth middleware, history pagination, proxy validation.
+# Tuning the stance thresholds. STANCE_THRESHOLD and STANCE_DOMINANCE decide,
+# for every document read, whether it counts as supporting the claim,
+# contradicting it, or neither. They were chosen by hand; this measures them
+# against a labelled corpus using the real NLI model, so they can be set from
+# data. Needs transformers + torch, which is why it is a script and not a test.
+
+cd ml-service && python stance_sweep.py            # add --show-errors for the
+                                                   # pairs it currently misses
+#
+#  thresh  domin    acc  sup P  sup R  con P  con R  invented
+#  --------------------------------------------------------------
+#    0.35    1.6   ....   ....   ....   ....   ....       ...  <- current
+#
+# 'invented' counts documents recorded as taking a position they do not take.
+# That column matters more than accuracy: a threshold set too low manufactures
+# confirmations out of coverage that said nothing, and a wrong answer is worse
+# than no answer. Prefer a setting in the middle of a stable region over one
+# that peaks — a peak a 0.02 step falls off is a fit to the corpus, not to the
+# model.
+
+# Server — 24 tests: auth middleware, history pagination, proxy validation.
 # No database or network required.
 cd server && npm test
 
