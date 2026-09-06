@@ -19,7 +19,12 @@ SERVICE_DIR = Path(__file__).resolve().parent
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
-from binary_truth_mlp import COLUMNS, labels_to_binary, load_artifacts, normalize_rows
+from binary_truth_mlp import (
+    COLUMNS,
+    labels_to_binary,
+    load_artifacts,
+    make_prediction_features_batch,
+)
 
 
 def binary_metrics(y_true, probabilities, threshold):
@@ -46,13 +51,18 @@ def evaluate_claim_only_model():
     model_path = SERVICE_DIR / "binary_truth_mlp.pkl"
     if not model_path.exists():
         model_path = SERVICE_DIR / "saved_models" / "binary_truth_mlp.pkl"
-    model, vectorizer, _ = load_artifacts(model_path)
+    model, vectorizer, train_max_values = load_artifacts(model_path)
 
     test_df = pd.read_csv(SERVICE_DIR / "data" / "test.tsv", sep="\t", names=COLUMNS)
-    # This precisely mirrors main.py: statement text plus blank metadata and
-    # zero history counts.  Do not use build_text_input(test_df) here.
-    text_features = normalize_rows(vectorizer.transform(test_df["statement"].fillna("")))
-    production_features = np.hstack([text_features, np.zeros((len(test_df), 5))])
+    # Built by the same function main.py calls, so this cannot drift from what
+    # a live request computes. It used to transform the raw statement while
+    # main.py went through build_text_input(), which prepends column-name
+    # tokens and creates boundary bigrams -- a difference the old comment here
+    # claimed did not exist. Measured, it was worth 0.5 points of accuracy
+    # (0.6235 reported against 0.6188 actually served).
+    production_features = make_prediction_features_batch(
+        vectorizer, train_max_values, test_df["statement"].fillna("").astype(str)
+    )
     probabilities = model.predict_proba(production_features)
     metrics = binary_metrics(labels_to_binary(test_df["label"]), probabilities, model.best_threshold)
     return {

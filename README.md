@@ -353,7 +353,7 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
   "threshold": 0.49,
   "nli": {
     "enabled": true,
-    "model": "cross-encoder/nli-deberta-v3-small",
+    "model": "cross-encoder/nli-deberta-v3-base",
     "status": "ready",
     "error": null
   },
@@ -434,7 +434,7 @@ All served by `server/` (Express), all under `/api`:
 | Variable | Required? | Default | Notes |
 |---|---|---|---|
 | `NLI_ENABLED` | No | `true` | Set `false` only to intentionally disable NLI (e.g. emergency memory mitigation). |
-| `NLI_MODEL` | No | `cross-encoder/nli-deberta-v3-small` | HuggingFace model id. See [NLI model & memory](#nli-model--memory) before changing this. |
+| `NLI_MODEL` | No | `cross-encoder/nli-deberta-v3-base` | HuggingFace model id. See [NLI model & memory](#nli-model--memory) before changing this. |
 | `GNEWS_API_KEY` | No | — | Enables the GNews provider. Without it, only DuckDuckGo runs. |
 | `GUARDIAN_API_KEY` | No | — | Enables The Guardian provider. |
 | `NEWSAPI_KEY` | No | — | Enables the NewsAPI provider. |
@@ -628,9 +628,20 @@ The root `vercel.json` builds `client/` as a static site and `server/api/index.j
 
 ### NLI model & memory
 
-`NLI_MODEL` defaults to `cross-encoder/nli-deberta-v3-small` (~141M parameters, ~560MB of fp32 weights) for its stronger entailment/contradiction accuracy — the right default for local use, where memory isn't the constraint.
+`NLI_MODEL` defaults to `cross-encoder/nli-deberta-v3-base`. Stance detection decides **every verdict this system produces**, so the larger checkpoint is spent exactly where it pays. This project runs locally, where a few hundred megabytes of weights cost nothing.
 
-If you do deploy this on a small always-on instance (512MB), that model reliably triggers OOM restarts — PyTorch's own import footprint (300–500MB, independent of model choice) plus the model weights adds up fast. In that case, set `NLI_MODEL=cross-encoder/nli-MiniLM2-L6-H768` (~22M parameters, ~6x smaller) instead, and budget for the instance to need 1GB+ regardless of model choice. `-deberta-v3-small`, `-deberta-v3-base`, `-deberta-v3-xsmall`, and `-MiniLM2-L6-H768` are all pre-verified in `nli_service.py`'s label-order table. **If you set a different model entirely**, verify it after deploying:
+Smaller checkpoints are one environment variable away, and all four are pre-verified in `nli_service.py`'s label-order table:
+
+| `NLI_MODEL` | Params | Notes |
+|---|---|---|
+| `cross-encoder/nli-deberta-v3-base` | ~184M | **Default.** Best stance accuracy. |
+| `cross-encoder/nli-deberta-v3-small` | ~141M | Previous default. |
+| `cross-encoder/nli-deberta-v3-xsmall` | ~71M | Faster startup. |
+| `cross-encoder/nli-MiniLM2-L6-H768` | ~22M | Smallest; noticeably weaker. |
+
+Budget 1GB+ of RAM regardless of choice — PyTorch's own import footprint is 300–500MB before any weights load. Whichever you pick, measure it rather than assuming: `python stance_sweep.py --show-errors` scores the checkpoint against a labelled corpus and reports *invented positions* (sources recorded as taking a stance they do not take), which matters more than raw accuracy.
+
+**If you set a model outside the table**, verify it once it loads:
 
 1. Check `/api/health` → `nli.status` should be `"ready"`.
 2. Check the service logs for a line like `NLI model loaded: <model> — id2label={...}` to confirm what label scheme it actually uses.
@@ -646,17 +657,28 @@ The production-equivalent, statement-only evaluation:
 
 | Metric | Value |
 |---|---|
-| Accuracy | 62.35% |
-| Precision | 63.18% |
-| Recall | 79.55% |
-| F1 Score | 0.7043 |
-| Brier score | 0.2262 |
+| Accuracy | **61.88%** |
+| Precision | 62.09% |
+| Recall | 83.05% |
+| F1 Score | 0.7106 |
+| AUC | 0.6722 |
+| Brier score | 0.2277 |
+| Majority-class baseline | 56.35% |
+
+Both this and the Model Evaluation page are now scored through
+`make_prediction_features_batch()` — the same function `main.py` calls — so the
+number describes the model as served. It previously did not: `evaluate_models.py`
+fed the shipped model speaker metadata and real credit-history counts it was
+never trained on and reported **56.9%**, while `evaluate_production_model.py`
+transformed the raw statement instead of going through `build_text_input()` and
+reported **62.35%**. Neither was what a request computes.
 
 This model is **never used to determine the final verdict** — see [Design principles](#design-principles). It's kept visible in the API response and on the Model Evaluation/Comparison pages purely for research transparency. Reproduce these numbers with:
 
 ```bash
 cd ml-service
-python evaluate_production_model.py
+python evaluate_production_model.py    # the metrics above
+python evaluate_models.py              # regenerates evaluation_results.json
 ```
 
 ## Project structure

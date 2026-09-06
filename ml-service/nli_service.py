@@ -107,7 +107,7 @@ class NLIService:
         Injected factory for testing (replaces ``transformers.pipeline``).
     model_name : str, optional
         HuggingFace model identifier.  Defaults to the ``NLI_MODEL``
-        environment variable or ``cross-encoder/nli-deberta-v3-small``.
+        environment variable or ``cross-encoder/nli-deberta-v3-base``.
     """
 
     # Valid states
@@ -121,8 +121,13 @@ class NLIService:
         pipeline_factory: Callable | None = None,
         model_name: str | None = None,
     ):
+        # Defaults to the BASE checkpoint. This project runs locally, where a
+        # few hundred megabytes of weights cost nothing, and stance is the
+        # model that decides every verdict — so the larger checkpoint is spent
+        # exactly where it pays. The smaller ones remain one env var away, and
+        # all four are pre-verified in the label-order table above.
         self.model_name: str = model_name or os.getenv(
-            "NLI_MODEL", "cross-encoder/nli-deberta-v3-small"
+            "NLI_MODEL", "cross-encoder/nli-deberta-v3-base"
         )
         self._pipeline_factory = pipeline_factory
         self._pipeline = None

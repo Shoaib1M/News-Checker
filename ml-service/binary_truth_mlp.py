@@ -328,6 +328,49 @@ def load_artifacts(path):
 """
 PURPOSE: Core function used by `main.py` to turn raw text into model-ready numbers.
 """
+def make_prediction_features_batch(
+    vectorizer,
+    train_max_values,
+    statements,
+    **metadata,
+):
+    """Features for many statements, built exactly as a live request builds them.
+
+    WHY THIS EXISTS:
+    Evaluation used to construct its own features. `evaluate_models.py` loaded
+    the shipped model and then scored it on `build_text_input(test_df)` — the
+    statement PLUS subject, speaker, job, state, party and context — with real
+    non-zero history counts. The shipped model is trained statement-only with
+    history zeroed (see `main()` below), so it was being measured on a
+    distribution it had never seen, and reported **56.9%** for a model that
+    scores **62.4%** on the inputs it actually receives.
+
+    Everything that scores this model now goes through here, so evaluation and
+    serving cannot drift apart again. Any metadata a caller does not supply
+    defaults to the blank/zero value the API sends.
+    """
+    rows = []
+    for statement in statements:
+        row = {"statement": statement}
+        for column in TEXT_FEATURE_COLUMNS:
+            if column != "statement":
+                row[column] = metadata.get(column, "")
+        for column in HISTORY_COLUMNS:
+            row[column] = metadata.get(column, 0)
+        rows.append(row)
+
+    frame = pd.DataFrame(rows)
+
+    # 1. Process Text
+    text_features = normalize_rows(vectorizer.transform(build_text_input(frame)))
+
+    # 2. Process History
+    history_features, _ = build_history_features(frame, train_max_values)
+
+    # 3. Glue them together side-by-side
+    return np.hstack([text_features, history_features])
+
+
 def make_prediction_features(
     vectorizer,
     train_max_values,
@@ -344,31 +387,23 @@ def make_prediction_features(
     mostly_true=0,
     pants_fire=0,
 ):
-    # Pack it into a 1-row DataFrame so our builder functions work normally
-    row = pd.DataFrame([{
-        "statement": statement,
-        "subject": subject,
-        "speaker": speaker,
-        "job": job,
-        "state": state,
-        "party": party,
-        "context": context,
-        "barely_true": barely_true,
-        "false": false,
-        "half_true": half_true,
-        "mostly_true": mostly_true,
-        "pants_fire": pants_fire,
-    }])
-
-    # 1. Process Text
-    text = build_text_input(row)
-    text_features = normalize_rows(vectorizer.transform(text))
-    
-    # 2. Process History
-    history_features, _ = build_history_features(row, train_max_values)
-    
-    # 3. Glue them together side-by-side
-    return np.hstack([text_features, history_features])
+    """One statement's features. Delegates so there is a single code path."""
+    return make_prediction_features_batch(
+        vectorizer,
+        train_max_values,
+        [statement],
+        subject=subject,
+        speaker=speaker,
+        job=job,
+        state=state,
+        party=party,
+        context=context,
+        barely_true=barely_true,
+        false=false,
+        half_true=half_true,
+        mostly_true=mostly_true,
+        pants_fire=pants_fire,
+    )
 
 
 def predict_statement(model, vectorizer, train_max_values, statement, **metadata):

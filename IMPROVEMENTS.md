@@ -1150,3 +1150,72 @@ benchmark's own bugs:
 
 A headline that cannot be corrupted cleanly is **skipped**. Losing a sample
 costs a little statistical power; mangling one costs the number's meaning.
+
+### Bug 34 — the model was being measured on inputs it was never trained on
+
+`binary_truth_mlp.py`, `evaluate_models.py`, `evaluate_production_model.py`
+
+The shipped model is trained **statement-only**, with the five credit-history
+columns forced to zero (`binary_truth_mlp.main()`):
+
+```python
+train_text = train_df["statement"].fillna("").astype(str)          # no metadata
+X_train_history = build_history_features(
+    train_df.assign(**{c: 0 for c in HISTORY_COLUMNS}))            # all zeros
+```
+
+`evaluate_models.py` then **loaded that model** and scored it on
+`build_text_input(test_df)` — statement *plus* subject, speaker, job, state,
+party and context — with real non-zero history counts. It was measured on a
+distribution it had never seen, and that number went straight to the frontend's
+Model Evaluation page.
+
+A second, subtler copy of the same bug lived in `evaluate_production_model.py`,
+whose comment claimed it "precisely mirrors main.py" while transforming the raw
+statement — `main.py` goes through `build_text_input()`, which prepends
+column-name tokens and creates boundary bigrams.
+
+| Scored as | Accuracy | AUC |
+|---|---|---|
+| Published on the site (metadata + real history) | 0.5691 | 0.6097 |
+| `evaluate_production_model.py` (raw statement) | 0.6235 | — |
+| **Through the path a request actually takes** | **0.6188** | **0.6722** |
+| Majority-class baseline | 0.5635 | — |
+
+The project was under-reporting its own model by **5 points of accuracy and
+6 points of AUC**. The threshold (0.49) is chosen on `valid.tsv`, not test, so
+the corrected figure carries no leakage.
+
+**The fix is structural, not arithmetic.** `make_prediction_features_batch()`
+is now the single feature construction, and `make_prediction_features()` — the
+function `main.py` calls — delegates to it. Every evaluator goes through it, so
+evaluation cannot drift from serving again. Two drift tests enforce it: one
+asserts the single-row form delegates rather than rebuilding features, another
+that neither evaluator constructs its own.
+
+The first version of that drift test matched the explanatory *comment*
+describing the bug and so passed on prose; it now strips comments before
+scanning.
+
+The from-scratch fallback branch in `evaluate_models.py` had the same defect in
+the other direction — it trained on metadata and history, producing a
+*different* model from the one that ships. It now mirrors `main()`.
+
+### NLI default raised to `deberta-v3-base`
+
+`nli_service.py`, `Dockerfile`, `README.md`
+
+Stance detection decides every verdict this system produces, and the default
+checkpoint was chosen under a 512MB deployment constraint that no longer
+applies. The default is now `cross-encoder/nli-deberta-v3-base` (~184M params),
+whose indexed label order was already registered and verified in
+`_KNOWN_INDEXED_LABEL_ORDERS`. The three smaller checkpoints remain one
+environment variable away and are documented with their sizes.
+
+**Not verified here:** the sandbox is blocked from `huggingface.co` (403 on
+CONNECT), so the new default could not be downloaded or benchmarked from this
+environment. It is the same family and label scheme as the previous default,
+and a load failure is non-fatal by design (the service abstains rather than
+crashing) — but the checkpoint should be confirmed on first run via
+`/api/health` → `nli.status`, and compared against the old one with
+`python stance_sweep.py --show-errors`.
