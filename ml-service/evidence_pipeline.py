@@ -292,7 +292,13 @@ def run_pipeline(
 
         if passages and nli_service.is_available:
             nli_scores = nli_service.score_many(claim, passages)
-            if nli_scores and nli_scores[0].get("available"):
+            # Availability is per passage, so it must be read per passage.
+            # Testing only nli_scores[0] discarded a document that had been
+            # classified cleanly seven times over because the first passage
+            # happened to fail — and, in the other direction, let unavailable
+            # entries (which report 0.0/0.0/1.0) into the score comparison.
+            usable = [i for i, score in enumerate(nli_scores) if score.get("available")]
+            if usable:
                 nli_available = True
                 # The strongest entailment and the strongest contradiction are
                 # taken INDEPENDENTLY, across all passages.
@@ -311,13 +317,13 @@ def run_pipeline(
                 # maximum. It stays eligible for contradiction: an article
                 # saying the claim is false is refuting it either way.
                 assertive = [
-                    i for i, passage in enumerate(passages)
-                    if not _CLAIM_REPORTING_FRAME.search(passage)
-                ] or list(range(len(nli_scores)))
+                    i for i in usable
+                    if not _CLAIM_REPORTING_FRAME.search(passages[i])
+                ] or usable
 
                 support_idx = max(assertive, key=lambda i: nli_scores[i]["entailment"])
                 contradiction_idx = max(
-                    range(len(nli_scores)), key=lambda i: nli_scores[i]["contradiction"]
+                    usable, key=lambda i: nli_scores[i]["contradiction"]
                 )
                 support_score = nli_scores[support_idx]["entailment"]
                 contradiction_score = nli_scores[contradiction_idx]["contradiction"]

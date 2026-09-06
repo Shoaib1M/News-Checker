@@ -294,3 +294,60 @@ class TestCredibleSourcesReachNLI(unittest.TestCase):
         from evidence_pipeline import _select_for_classification
         documents = [{"url": "https://a.example/1", "source": "a.example"}]
         self.assertEqual(_select_for_classification(documents, 8), documents)
+
+
+class TestPartialNLIAvailability(unittest.TestCase):
+    """Availability is per passage, so it has to be read per passage.
+
+    The check tested only `nli_scores[0]`, which cuts both ways: a document
+    classified cleanly seven times over was discarded because its first
+    passage happened to fail, and — in the other direction — unavailable
+    entries, which report 0.0/0.0/1.0, were allowed into the score comparison
+    as though they were real neutral judgements.
+    """
+
+    CLAIM = "The prime minister of India resigned this morning"
+    BODY = "The prime minister resigned on Tuesday after coalition talks failed. " * 10
+
+    def run_with(self, scorer):
+        results = [SearchResult(
+            url="https://reuters.com/story", title="India PM resigns",
+            snippet="The prime minister resigned.", text=self.BODY,
+            provider="p", source="reuters.com",
+        )]
+        with patch.object(evidence_pipeline, "search_all_providers",
+                          lambda q, **k: (results, DIAGNOSTIC)), \
+             patch.object(evidence_pipeline, "get_nli_service", lambda: scorer):
+            return run_pipeline(self.CLAIM)
+
+    @staticmethod
+    def _scorer(available_at):
+        class _Partial:
+            is_available = True
+
+            def score_many(self, claim, passages):
+                return [
+                    {"entailment": 0.92, "contradiction": 0.02,
+                     "neutral": 0.06, "available": True}
+                    if available_at(i) else
+                    {"entailment": 0.0, "contradiction": 0.0,
+                     "neutral": 1.0, "available": False}
+                    for i in range(len(passages))
+                ]
+        return _Partial()
+
+    def test_a_failure_on_the_first_passage_does_not_discard_the_document(self):
+        outcome = self.run_with(self._scorer(lambda i: i != 0))
+        self.assertTrue(outcome.evidence[0].nli_available)
+        self.assertEqual(outcome.evidence[0].stance, "supports")
+
+    def test_a_failure_on_a_later_passage_does_not_discard_it_either(self):
+        outcome = self.run_with(self._scorer(lambda i: i == 0))
+        self.assertTrue(outcome.evidence[0].nli_available)
+        self.assertEqual(outcome.evidence[0].stance, "supports")
+
+    def test_when_every_passage_fails_the_document_is_unclassified(self):
+        outcome = self.run_with(self._scorer(lambda i: False))
+        self.assertFalse(outcome.evidence[0].nli_available)
+        self.assertEqual(outcome.evidence[0].stance, "unclear")
+        self.assertEqual(outcome.stance["status"], "insufficient_evidence")
