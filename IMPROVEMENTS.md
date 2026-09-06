@@ -1329,3 +1329,43 @@ the test set with extra steps — the reported number would describe the sweep
 rather than the model. A variant also only displaces the incumbent if it clears
 the incumbent's validation confidence interval; anything inside it is noise,
 and swapping models on noise means retraining forever while the number wanders.
+
+### Bug 37 — the vocabulary's column order depended on the process
+
+`tfidf.py`
+
+`build_vocab` counted document frequencies by iterating a `set` of token
+**strings**:
+
+```python
+tokens = set(self.get_ngrams(words))     # set of strings
+for token in tokens:
+    doc_frequency[token] = doc_frequency.get(token, 0) + 1
+```
+
+Python randomises string hashing per process, so the insertion order of
+`doc_frequency` differed between runs — and step 2 assigned each token its
+column index in exactly that order. **The feature matrix was column-permuted
+per process.** Seeded weight initialisation therefore lined up against
+different tokens each run, and an identical training configuration trained into
+a different model.
+
+The cost was not a wrong answer but an unmeasurable one. It surfaced only when
+the experiment sweep scored the same variant **0.6402** in one invocation and
+**0.6379** in the next — a spread larger than most of the effects the sweep
+exists to detect. Every comparison it had made was unreadable.
+
+It was invisible from inside a single interpreter, which is why the
+reproducibility test added alongside the RNG fix (bug 36) passed while this was
+still live: one process, one hash seed, one column order.
+`tests/test_vectorizer_determinism.py` therefore runs the vectorizer — and a
+small training run — in **separate interpreters under different
+`PYTHONHASHSEED` values**, which is the only way to see it.
+
+Fixed by assigning indices in sorted order, giving a canonical column layout
+that does not depend on the run.
+
+The shipped `binary_truth_mlp.pkl` is unaffected: it carries its own saved
+vocabulary and still scores 0.6188. It is simply one draw from the old
+non-deterministic ordering — a freshly trained baseline now scores 0.6243 on
+test, comfortably inside its interval.

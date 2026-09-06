@@ -52,3 +52,6 @@ node_modules/
 .DS_Store
 Thumbs.dbml-service/.venv/
 ml-service/.venv/
+
+# Sweep run artifact — regenerate with ml-service/train_experiments.py
+ml-service/experiment_results.json
