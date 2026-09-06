@@ -465,6 +465,10 @@ python -m pytest tests/ -q
 #   python -c "from providers.google_news import search; print(len(search('test')))"
 #   python -c "from providers.wikipedia import search; print(len(search('Eiffel Tower')))"
 
+# Server — 17 tests: auth middleware, history pagination, proxy validation.
+# No database or network required.
+cd server && npm test
+
 # Client — lint + production build
 cd client
 npm run lint
@@ -573,7 +577,7 @@ newschecker/
 
 Being direct about these matters more than pretending they don't exist:
 
-- **No automated test suite for `server/`** (the Express layer) — `check.js`, `auth.js`, `history.js` are untested. The ML service and frontend build are covered; this is the biggest remaining test gap.
+- **`server/` test coverage is partial.** `npm test` in `server/` runs 17 tests covering the auth middleware, history pagination, and the check proxy's input validation — no database or network needed. The route handlers' database paths are still untested; that would need an in-memory Mongo.
 - **Retrieval quality depends on live web search.** An unconfigured checkout retrieves from Google News RSS, Wikipedia and DuckDuckGo; adding `GNEWS_API_KEY` / `GUARDIAN_API_KEY` / `NEWSAPI_KEY` widens it further. The system is designed to abstain rather than force a weak match — but recall is still bounded by what's configured and reachable at request time, and `GET /api/health` is the place to check which providers are actually live.
 - **Absence-of-coverage is an inference, not a proof.** `unsupported_no_coverage` says the providers we could reach returned nothing asserting the claim. Its guards (salience, candidate volume, non-negation, working NLI, working search) exist to keep it honest, and confidence scales with how much was searched — but a very fresh story, a non-English source, or a story outside the indexed providers can still produce it wrongly. It is deliberately never phrased as "false".
 - **Claim triage is heuristic.** `claim_triage.py` classifies by pattern, not by parsing. It handles the shapes in `tests/test_claim_edge_cases.py` — including the traps that broke it during development (factual superlatives read as opinions, irregular past tenses read as non-assertions, pasted links read as claims) — but an unusual phrasing can still land in the wrong bucket. The failure is designed to be safe in one direction: an over-admitted claim gets searched, an over-rejected one refuses to check something real, so the thresholds lean toward admitting.
