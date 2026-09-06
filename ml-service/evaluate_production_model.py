@@ -27,6 +27,62 @@ from binary_truth_mlp import (
 )
 
 
+def bootstrap_interval(y_true, predictions, resamples=2000, seed=0):
+    """95% confidence interval for accuracy, by resampling the test set.
+
+    WHY THIS EXISTS:
+    A single 1267-row split gives one number and no sense of how much of it is
+    luck. Without an interval there is no way to tell a real improvement from
+    noise, and the temptation is to chase the third decimal place of a figure
+    whose second decimal is not stable. The gap that matters here — 61.9%
+    against a 56.4% baseline — should be reported as an interval so a reader
+    can see whether it clears the baseline at all.
+    """
+    rng = np.random.default_rng(seed)
+    correct = (predictions == y_true).astype(float)
+    n = len(correct)
+    means = np.array([
+        correct[rng.integers(0, n, n)].mean() for _ in range(resamples)
+    ])
+    return round(float(np.percentile(means, 2.5)), 4), round(float(np.percentile(means, 97.5)), 4)
+
+
+def calibration_report(y_true, probabilities, bins=10):
+    """How closely the predicted probability matches the observed frequency.
+
+    WHY THIS MATTERS MORE THAN ACCURACY HERE:
+    This score is shown to users and consumed downstream as a prior. A model
+    that is 62% accurate but says "0.9" when it means "0.6" is worse than a
+    less accurate model that knows what it does not know. Expected calibration
+    error is the weighted average gap between the two, so 0.0 is perfect and
+    anything above ~0.1 means the number should not be displayed as a
+    confidence.
+    """
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    rows = []
+    total_gap = 0.0
+    for low, high in zip(edges[:-1], edges[1:]):
+        in_bin = (probabilities >= low) & (probabilities < high if high < 1.0
+                                           else probabilities <= 1.0)
+        count = int(in_bin.sum())
+        if not count:
+            continue
+        predicted = float(probabilities[in_bin].mean())
+        observed = float(y_true[in_bin].mean())
+        rows.append({
+            "range": f"{low:.1f}-{high:.1f}",
+            "n": count,
+            "mean_predicted": round(predicted, 4),
+            "observed_frequency": round(observed, 4),
+            "gap": round(predicted - observed, 4),
+        })
+        total_gap += count * abs(predicted - observed)
+    return {
+        "expected_calibration_error": round(total_gap / len(y_true), 4),
+        "bins": rows,
+    }
+
+
 def binary_metrics(y_true, probabilities, threshold):
     predictions = (probabilities >= threshold).astype(int)
     tp = int(np.sum((predictions == 1) & (y_true == 1)))
@@ -64,9 +120,21 @@ def evaluate_claim_only_model():
         vectorizer, train_max_values, test_df["statement"].fillna("").astype(str)
     )
     probabilities = model.predict_proba(production_features)
-    metrics = binary_metrics(labels_to_binary(test_df["label"]), probabilities, model.best_threshold)
+    y_true = labels_to_binary(test_df["label"])
+    metrics = binary_metrics(y_true, probabilities, model.best_threshold)
+    predictions = (probabilities >= model.best_threshold).astype(int)
+    low, high = bootstrap_interval(y_true, predictions)
+
+    # The score a model gets for always predicting the larger class. An
+    # accuracy figure without it is unreadable.
+    baseline = float(max(y_true.mean(), 1 - y_true.mean()))
+
     return {
         "evaluation": "claim-only production-equivalent LIAR test",
+        "accuracy_95_ci": [low, high],
+        "majority_class_baseline": round(baseline, 4),
+        "beats_baseline": bool(low > baseline),
+        "calibration": calibration_report(y_true, probabilities),
         "threshold": round(float(model.best_threshold), 4),
         "warning": "This is a dated US-political dataset; it is not a general-news accuracy claim.",
         **metrics,

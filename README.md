@@ -657,13 +657,28 @@ The production-equivalent, statement-only evaluation:
 
 | Metric | Value |
 |---|---|
-| Accuracy | **61.88%** |
+| Accuracy | **61.88%**  (95% CI 59.12–64.48) |
+| Majority-class baseline | 56.35% |
 | Precision | 62.09% |
 | Recall | 83.05% |
 | F1 Score | 0.7106 |
 | AUC | 0.6722 |
 | Brier score | 0.2277 |
-| Majority-class baseline | 56.35% |
+| Expected calibration error | 0.0458 |
+
+Two things worth reading off that table rather than the accuracy alone.
+
+**The gap is real.** The 95% bootstrap interval's *lower* bound (59.12%) sits
+above the majority-class baseline (56.35%), so the model beats "always answer
+true" by more than split luck. On 1267 rows a point estimate alone could not
+establish that, which is why the interval is reported and not just the number.
+
+**The probability means roughly what it says.** Expected calibration error is
+0.046 — under the ~0.1 threshold beyond which a score should not be shown to a
+user as a confidence. That matters more here than accuracy does, because this
+number is displayed *and* consumed downstream as a prior: a model that is 62%
+accurate while saying "0.9" when it means "0.6" would be worse than a less
+accurate one that knows what it does not know.
 
 Both this and the Model Evaluation page are now scored through
 `make_prediction_features_batch()` — the same function `main.py` calls — so the

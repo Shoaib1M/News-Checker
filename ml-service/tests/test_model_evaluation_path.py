@@ -134,3 +134,81 @@ class TestTheEvaluatorsUseIt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestReportedUncertainty(unittest.TestCase):
+    """A point estimate with no interval invites chasing noise.
+
+    The corrected accuracy (0.6188) sits only 5.5 points above the majority
+    baseline on 1267 rows. Whether that gap is real is the whole question, and
+    it cannot be answered by the point estimate alone.
+    """
+
+    def setUp(self):
+        import evaluate_production_model as epm
+        self.epm = epm
+
+    def test_a_perfect_predictor_has_a_tight_interval_at_one(self):
+        y = np.array([1, 0] * 100)
+        low, high = self.epm.bootstrap_interval(y, y.copy(), resamples=200)
+        self.assertEqual((low, high), (1.0, 1.0))
+
+    def test_the_interval_brackets_the_point_estimate(self):
+        rng = np.random.default_rng(0)
+        y = rng.integers(0, 2, 500)
+        pred = np.where(rng.random(500) < 0.7, y, 1 - y)
+        accuracy = float((pred == y).mean())
+        low, high = self.epm.bootstrap_interval(y, pred, resamples=500)
+        self.assertLessEqual(low, accuracy)
+        self.assertGreaterEqual(high, accuracy)
+
+    def test_a_smaller_sample_gives_a_wider_interval(self):
+        rng = np.random.default_rng(1)
+        def width(n):
+            y = rng.integers(0, 2, n)
+            pred = np.where(rng.random(n) < 0.7, y, 1 - y)
+            low, high = self.epm.bootstrap_interval(y, pred, resamples=400)
+            return high - low
+        self.assertGreater(width(100), width(2000))
+
+    def test_it_is_reproducible(self):
+        y = np.array([1, 0, 1, 1, 0] * 40)
+        pred = np.array([1, 1, 1, 0, 0] * 40)
+        first = self.epm.bootstrap_interval(y, pred, resamples=200, seed=7)
+        second = self.epm.bootstrap_interval(y, pred, resamples=200, seed=7)
+        self.assertEqual(first, second)
+
+
+class TestCalibration(unittest.TestCase):
+    """The score is shown to users and consumed as a prior, so whether it
+    means what it says matters more than whether it is often right."""
+
+    def setUp(self):
+        import evaluate_production_model as epm
+        self.epm = epm
+
+    def test_a_perfectly_calibrated_model_scores_zero_error(self):
+        """Half the 0.5-bin true, all of the 0.9-bin true."""
+        probabilities = np.array([0.5] * 100 + [0.95] * 100)
+        y = np.array([1] * 50 + [0] * 50 + [1] * 100)
+        report = self.epm.calibration_report(y, probabilities)
+        self.assertLess(report["expected_calibration_error"], 0.03)
+
+    def test_an_overconfident_model_is_penalised(self):
+        """Says 0.95, right half the time."""
+        probabilities = np.array([0.95] * 100)
+        y = np.array([1] * 50 + [0] * 50)
+        report = self.epm.calibration_report(y, probabilities)
+        self.assertGreater(report["expected_calibration_error"], 0.4)
+
+    def test_empty_bins_are_omitted_rather_than_reported_as_zero(self):
+        probabilities = np.array([0.55] * 20)
+        report = self.epm.calibration_report(np.ones(20, dtype=int), probabilities)
+        self.assertEqual(len(report["bins"]), 1)
+        self.assertEqual(report["bins"][0]["n"], 20)
+
+    def test_probabilities_of_exactly_one_are_counted(self):
+        """A half-open top bin silently drops them."""
+        report = self.epm.calibration_report(
+            np.ones(10, dtype=int), np.ones(10))
+        self.assertEqual(sum(b["n"] for b in report["bins"]), 10)
