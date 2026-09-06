@@ -43,6 +43,7 @@ GOOGLE_NEWS_RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
   <link>https://news.google.com/rss/articles/CBMiaHR0cHM6</link>
   <description>&lt;a href="x"&gt;The prime minister resigned on Tuesday.&lt;/a&gt;</description>
   <source url="https://www.reuters.com">Reuters</source>
+  <pubDate>Tue, 02 Sep 2025 14:32:00 GMT</pubDate>
 </item>
 <item>
   <title>Delhi reacts to the resignation - The Times of India</title>
@@ -180,3 +181,40 @@ class LiveFetchPathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class RecentModeRequestTests(LiveFetchPathTests):
+    """The date filter has to reach the wire, not just the parameter.
+
+    Asserted against a real server's view of the request, because this is
+    exactly the kind of thing that looks right in the code and never leaves
+    the process — a parameter built into a dict that is then not passed on.
+    """
+
+    def test_google_news_sends_a_when_operator(self):
+        with patch.object(google_news, "FEED_URL", self.base + "/rss?q={query}"):
+            google_news.search("india prime minister resigned", recent_days=30)
+        path, _headers = _Handler.requests[0]
+        self.assertIn("when%3A30d", path,
+                      "the recency operator never reached the request")
+
+    def test_google_news_omits_it_in_historical_mode(self):
+        with patch.object(google_news, "FEED_URL", self.base + "/rss?q={query}"):
+            google_news.search("india prime minister resigned")
+        path, _headers = _Handler.requests[0]
+        self.assertNotIn("when", path)
+
+    def test_the_claim_words_survive_alongside_the_operator(self):
+        """A filter that replaced the query would return today's everything."""
+        with patch.object(google_news, "FEED_URL", self.base + "/rss?q={query}"):
+            google_news.search("india prime minister resigned", recent_days=30)
+        path, _headers = _Handler.requests[0]
+        self.assertIn("resigned", path)
+        self.assertIn("india", path)
+
+    def test_the_published_date_is_read_off_the_feed(self):
+        with patch.object(google_news, "FEED_URL", self.base + "/rss?q={query}"):
+            results = google_news.search("india prime minister resigned")
+        self.assertIsNotNone(results[0].published,
+                             "pubDate is in the payload and must be parsed")
+        self.assertEqual(results[0].published.year, 2025)

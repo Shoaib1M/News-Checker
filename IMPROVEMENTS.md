@@ -950,3 +950,73 @@ other side of it is a confident claim about the world.
 one provider, so every absence-of-coverage test was asserting that a single
 provider is enough. The harness now stubs two, which is what a working search
 looks like, and a new test pins that one is not enough.
+
+### Bug 29 — the system had no clock, which is the core weakness on today's news
+
+`claim_recency.py`, `providers/dates.py` (new), all providers, `evidence_pipeline.py`,
+`evidence_aggregator.py`, `main.py`, `server/routes/check.js`, `App.jsx`
+
+Entailment has no clock. *"India's prime minister resigned on Tuesday"* entails
+*"the prime minister of India resigned this morning"* perfectly — and if that
+article is from 2014, the entailment is a coincidence, not a confirmation.
+Nothing compared the two dates, because **no article carried a date at all**.
+
+The dates were always in the payloads and were being decoded and thrown away:
+Google News ships RFC 2822 in `<pubDate>`, GNews and NewsAPI ship ISO 8601 in
+`publishedAt`, the Guardian ships it in `webPublicationDate`. `SearchResult`
+simply had no field for it.
+
+Retrieval was blind from the other end too. The feeds are recency-**ranked**
+but not recency-**filtered**, and NewsAPI was queried with
+`sortBy=relevancy` — which for a breaking story returns last year's article
+about the same subject, because it matches the words better.
+
+There are now two modes, selectable in the UI and auto-detected from the
+claim's wording as a fallback:
+
+- **Recent** — the last 30 days. Every provider that supports a date filter is
+  asked for that window (`when:30d`, `from=`, `sortBy=publishedAt`,
+  `from-date=`), Wikipedia sits the round out because it is a tertiary source
+  that lags a news cycle by days, and an article older than the window cannot
+  confirm the claim.
+- **Historical** — no date limit, relevance-ordered, Wikipedia included.
+
+Auto-detection is a convenience, not a substitute for the choice: *"the PM
+resigned"* is a claim about today for someone who has just seen it on
+television, and no parser recovers that from the words. The person checking
+knows; the parser does not.
+
+**Guardrails, which are most of the test file:**
+
+- Staleness only ever *withdraws* support. An old article is not evidence that
+  today's event did not happen.
+- It never fires on an undated claim, and never on a document with no date —
+  Wikipedia and DuckDuckGo supply none, and treating unknown as old would
+  delete real evidence over a missing field.
+- The staleness window (45 days) is deliberately wider than the retrieval
+  window (30). Retrieval should *ask* for a month; evidence arriving from just
+  outside it — a sloppy feed timestamp, an article republished with a new date
+  — should not be thrown away at the boundary.
+- Absence-of-coverage is vetoed when anything was set aside as too old.
+  *"I found this, but from 2014"* is a different finding from *"this never
+  happened"*, and only the second is a statement about the world.
+
+`server/routes/check.js` forwards an allowlist of fields rather than
+`req.body`, so the new mode had to be added there explicitly — otherwise it
+would have been silently dropped, and the backend would have looked like it was
+ignoring the setting.
+
+### Bug 30 — the selected mode button was invisible while hovered
+
+`client/src/App.css`
+
+`.mode-option:hover:not(:disabled)` carries two pseudo-classes, giving it
+specificity (0,0,3,0) against `.mode-option.active`'s (0,0,2,0). The hover rule
+therefore won on the button you had just clicked, painting purple text on the
+purple selected background — so the label of the selected option vanished for
+as long as the pointer stayed on it, which is every click.
+
+Neither `npm run build`, eslint, nor the render smoke test can see this: the
+element is present, visible, and correctly sized. It was found by screenshotting
+the component and looking at it, and confirmed by reading the computed style —
+`color: rgb(124, 58, 237)` on `background: rgb(124, 58, 237)`.
