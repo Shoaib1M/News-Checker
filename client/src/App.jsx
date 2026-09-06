@@ -33,6 +33,36 @@ import HowItWorks from "./components/HowItWorks";
 // The backend API URL (e.g., http://localhost:3000)
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+/*
+PURPOSE: Turn an HTTP failure into something a person can act on.
+
+WHY THIS EXISTS: The raw strings are backend-speak — "ML service error.",
+"ML service timed out." — and read as if the system had judged the claim.
+Every message here says what failed and what to do, and none of them can be
+mistaken for a verdict. The technical detail is kept, because the most common
+cause is a misconfigured FASTAPI_URL and hiding that wastes an afternoon.
+*/
+function describeRequestFailure(status, payload) {
+  const detail = payload?.upstream ? ` (tried ${payload.upstream})` : "";
+  if (status === 400) {
+    return payload?.error || "That input can't be checked — try rephrasing it.";
+  }
+  if (status === 504) {
+    return (
+      "The analysis service took too long to respond, so this claim wasn't checked. " +
+      "This is a problem on our side, not a finding about the claim. " +
+      "The first check of a session is slowest — try again."
+    );
+  }
+  if (status === 502 || status === 503) {
+    return (
+      "Couldn't reach the analysis service, so this claim wasn't checked. " +
+      `This is a problem on our side, not a finding about the claim${detail}.`
+    );
+  }
+  return payload?.error || `The request failed (${status}).`;
+}
+
 // ─── Hash Router ────────────────────────────────────────────────────
 /*
 PURPOSE: A custom, lightweight router using the URL hash (e.g., #/how-it-works).
@@ -234,7 +264,7 @@ function App() {
       
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Request failed (${res.status})`);
+        throw new Error(describeRequestFailure(res.status, errData));
       }
       
       const data = await res.json();

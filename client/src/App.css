@@ -483,6 +483,25 @@
 .breakdown-item-muted { opacity: 0.55; }
 .breakdown-item-muted .breakdown-bar-fill { background: var(--gray-400); }
 
+/* Loading status line — elapsed time plus, after a threshold, why the wait
+   is long. Muted so it sits under the skeleton rather than competing. */
+.skeleton-status {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.7rem;
+  font-size: 0.75rem;
+  color: var(--gray-500);
+  line-height: 1.5;
+}
+
+.skeleton-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--gray-400);
+  min-width: 30px;
+}
+
 /* Retrieval provenance disclosure — same muted type as the assessment notes,
    no new colours beyond the status words. */
 .retrieval-details {
