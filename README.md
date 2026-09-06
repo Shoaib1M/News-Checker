@@ -488,7 +488,7 @@ The first evidence check (a non-deterministic claim) triggers the NLI model down
 ## Testing
 
 ```bash
-# ML service — 446 tests covering claim normalisation and triage, claim
+# ML service — 475 tests covering claim normalisation and triage, claim
 # decomposition, coverage modes and article dating, relevance and action
 # filtering, query generation, numeric-consistency and boilerplate guards,
 # HTML extraction hazards, NLI label-mapping safety, the stance rule, evidence
@@ -745,7 +745,7 @@ newschecker/
 │   ├── tfidf.py                    From-scratch TF-IDF vectorizer (feeds the legacy MLP only)
 │   ├── classifier.py / mlp_classifier.py   Experimental baselines, offline evaluation only
 │   ├── evaluate_models.py / evaluate_production_model.py   Offline evaluation scripts
-│   └── tests/                      446 tests across the modules above, incl.
+│   └── tests/                      475 tests across the modules above, incl.
 │                                    test_claim_edge_cases.py (end-to-end verdicts)
 ├── docs/screenshots/              README images
 ├── IMPROVEMENTS.md                 Dated engineering log of major fixes/audits
