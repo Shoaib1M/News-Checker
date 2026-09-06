@@ -108,6 +108,34 @@ _QUOTE_PAIRS = (('"', '"'), ("'", "'"), ("“", "”"),
                 ("‘", "’"), ("«", "»"))
 
 
+# Of the labels stripped above, these are the ones that say WHEN. "Breaking"
+# and "developing" mean the story is live now; "exclusive", "opinion" and
+# "analysis" say nothing about time and must not be read as if they did.
+_RECENCY_LABELS = frozenset({
+    "breaking", "breaking news", "just in", "urgent", "developing",
+    "update", "alert", "live",
+})
+
+
+def leading_label(raw: str) -> str:
+    """The wire-service label a submission opens with, lowercased, or "".
+
+    Exposed because the label is stripped before anything else reads the
+    claim, and it is the strongest time signal a submission carries. A
+    headline pasted as "BREAKING: the US banned Google" says the event is
+    happening now; the sentence left after normalisation does not.
+    """
+    match = _LEADING_LABEL.match(unicodedata.normalize("NFKC", raw or "").strip())
+    if not match:
+        return ""
+    return re.sub(r"[\s:\-–—]+$", "", match.group(0)).strip().lower()
+
+
+def signals_recency(raw: str) -> bool:
+    """Whether the submission's own packaging says this is happening now."""
+    return leading_label(raw) in _RECENCY_LABELS
+
+
 def _strip_emoji(text: str) -> str:
     """Drop symbol and pictograph characters, keeping all letters and marks.
 

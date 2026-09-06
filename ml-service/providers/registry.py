@@ -7,6 +7,7 @@ that the health endpoint and the API response can report.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import time
@@ -130,15 +131,32 @@ def deduplicate(results: list[SearchResult]) -> list[SearchResult]:
 
 
 # ── Orchestration ────────────────────────────────────────────────────
+def _accepts_recent_days(search_fn: Callable) -> bool:
+    """Whether this provider can filter by date at all.
+
+    Asked of the function rather than tracked in a table, so a provider that
+    gains date support starts being asked for one without a second edit
+    somewhere else — the kind of pair that drifts.
+    """
+    try:
+        return "recent_days" in inspect.signature(search_fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _run_one(
     name: str, query: str, search_fn: Callable, max_results: int, enabled: bool,
+    recent_days: int | None = None,
 ) -> tuple[ProviderDiagnostic, list[SearchResult]]:
     """Run a single provider/query pair, capturing its outcome as a diagnostic."""
     diag = ProviderDiagnostic(provider=name, query=query, enabled=enabled)
     if not enabled:
         return diag, []
     try:
-        results = search_fn(query, max_results=max_results)
+        kwargs = {"max_results": max_results}
+        if recent_days and _accepts_recent_days(search_fn):
+            kwargs["recent_days"] = recent_days
+        results = search_fn(query, **kwargs)
         diag.status = "success" if results else "no_results"
         diag.raw_result_count = len(results)
         return diag, results
@@ -153,6 +171,7 @@ def search_all_providers(
     max_per_provider: int = 5,
     use_duckduckgo: bool = True,
     deadline: float | None = None,
+    recent_days: int | None = None,
 ) -> tuple[list[SearchResult], list[ProviderDiagnostic]]:
     """Run all configured providers with multiple query variants, concurrently.
 
@@ -167,22 +186,28 @@ def search_all_providers(
 
     Returns (deduplicated_results, diagnostics).
     """
-    jobs: list[tuple[str, str, Callable, int, bool]] = []
+    jobs: list[tuple[str, str, Callable, int, bool, int | None]] = []
 
     for query in queries[:4]:  # Limit to top 4 queries
         for name, env_key, search_fn in PROVIDERS:
             jobs.append((
                 name, query, search_fn,
-                max(2, max_per_provider), bool(os.getenv(env_key)),
+                max(2, max_per_provider), bool(os.getenv(env_key)), recent_days,
             ))
         for name, env_flag, search_fn, per_query in KEYLESS_PROVIDERS:
-            jobs.append((
-                name, query, search_fn, per_query, _flag_enabled(env_flag),
-            ))
+            # Wikipedia is a tertiary source that lags a news cycle by days, so
+            # in recent mode it contributes evergreen background that crowds
+            # out the coverage being looked for. It is the right source for an
+            # undated claim and the wrong one for today.
+            enabled = _flag_enabled(env_flag)
+            if recent_days and name == "wikipedia":
+                enabled = False
+            jobs.append((name, query, search_fn, per_query, enabled, recent_days))
         if use_duckduckgo:
             jobs.append((
                 "duckduckgo", query, ddg_search,
                 max(3, max_per_provider // 2), _flag_enabled("DUCKDUCKGO_ENABLED"),
+                recent_days,
             ))
 
     completed: list[tuple[ProviderDiagnostic, list[SearchResult]]] = []

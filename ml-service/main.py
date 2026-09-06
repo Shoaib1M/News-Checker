@@ -42,6 +42,7 @@ from binary_truth_mlp import (
     make_prediction_features,
 )
 from claim_normalizer import normalize_claim
+from claim_recency import resolve_mode
 from claim_triage import triage_claim
 from claim_verifier import extract_claims
 from evidence_aggregator import assess_coverage, count_independent_groups
@@ -206,6 +207,12 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 class CheckRequest(BaseModel):
     statement: str = Field(..., min_length=5, max_length=2000)
+    # "recent" restricts retrieval to the last month and refuses to let older
+    # articles confirm the claim; "historical" searches without a date limit.
+    # "auto" reads the claim's own wording, which is a convenience rather than
+    # a substitute: "the PM resigned" is a claim about today for someone who
+    # just saw it on television, and no parser can tell.
+    mode: str = Field(default="auto", pattern="^(auto|recent|historical)$")
 
 
 # ── Nested response models ───────────────────────────────────────────
@@ -276,6 +283,10 @@ class EvidenceItem(BaseModel):
     # only when the article states a different figure from the claim's. Empty
     # for every source whose stance came straight from the scores.
     stance_note: str = ""
+    # ISO 8601, or None when the provider gave no date (Wikipedia, DuckDuckGo).
+    # Shown on the card: a date next to a claim about today is the fastest way
+    # for a reader to see why a source did or did not count.
+    published: str | None = None
     # Who actually published this, resolved from the aggregator link where
     # needed. The UI shows this rather than the raw URL host, which for a
     # Google News link would read "news.google.com" for every source.
@@ -291,8 +302,18 @@ class ClaimAssessment(BaseModel):
     evidence_count: int
 
 
+class CoverageMode(BaseModel):
+    """Which slice of coverage was searched, and why."""
+    mode: str = "historical"          # recent | historical
+    requested: str = "auto"           # what the caller asked for
+    window_days: int | None = None    # days of coverage searched, None = no limit
+    reason: str = ""
+    stale_evidence_count: int = 0     # found, but too old to be reporting it
+
+
 class CheckResponse(BaseModel):
     statement: str
+    coverage: CoverageMode = Field(default_factory=CoverageMode)
     claim_type: str = "general factual"
     verdict: str = "insufficient evidence"
     confidence: str = "low"
@@ -703,6 +724,10 @@ def check_statement(request: CheckRequest):
     # what the UI shows and what history stores; only the machinery sees the
     # normalised form.
     statement = normalize_claim(submitted)
+    # The ORIGINAL text, not just the normalised claim: normalisation
+    # strips the wire label off the front, and that label is the strongest
+    # thing a pasted headline says about when the event happened.
+    claim_time = resolve_mode(statement, request.mode, submitted=submitted)
 
     # --- 1. ML Prediction Phase ---
     # Convert text into a numerical array (TF-IDF features)
@@ -764,7 +789,7 @@ def check_statement(request: CheckRequest):
             for claim in claims:
                 outcome = run_pipeline(
                     claim, max_results=8, fetch_articles=True,
-                    deadline=pipeline_deadline,
+                    deadline=pipeline_deadline, claim_time=claim_time,
                 )
                 claim_summaries.append((claim, outcome.stance))
                 all_evidence.extend(outcome.evidence)
@@ -861,6 +886,10 @@ def check_statement(request: CheckRequest):
             source_tier=result.source_tier,
             nli_available=result.nli_available,
             stance_note=getattr(result, "stance_note", "") or "",
+            published=(
+                result.published.isoformat()
+                if getattr(result, "published", None) else None
+            ),
             publisher=result.publisher or "",
         ))
         if len(top_evidence) == 8:
@@ -900,6 +929,13 @@ def check_statement(request: CheckRequest):
     # --- 5. Build response ---
     return CheckResponse(
         statement=submitted,
+        coverage=CoverageMode(
+            mode=claim_time.mode,
+            requested=request.mode,
+            window_days=claim_time.window_days,
+            reason=claim_time.reason,
+            stale_evidence_count=ev_stance.get("stale_evidence_count", 0),
+        ),
         claim_type=(
             knowledge_assessment["claim_type"] if knowledge_assessment
             else triage.claim_type

@@ -121,6 +121,8 @@ function App() {
   
   // Fact-check state
   const [statement, setStatement] = useState("");
+  // "auto" | "recent" | "historical" — see the picker below.
+  const [mode, setMode] = useState("auto");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -276,7 +278,7 @@ function App() {
       const res = await fetch(`${API_BASE}/api/check`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ statement: trimmed }),
+        body: JSON.stringify({ statement: trimmed, mode }),
       });
       
       if (!res.ok) {
@@ -340,6 +342,13 @@ function App() {
           score: full.ml.score,
           verdict: full.ml.verdict,
           threshold: full.ml.threshold,
+        },
+        coverage: full.coverage && {
+          mode: full.coverage.mode,
+          requested: full.coverage.requested,
+          window_days: full.coverage.windowDays,
+          reason: full.coverage.reason,
+          stale_evidence_count: full.coverage.staleEvidenceCount,
         },
         retrieval: full.retrieval && {
           status: full.retrieval.status,
@@ -422,6 +431,29 @@ function App() {
           disabled={loading}
         />
         <div className="input-footer">
+          {/* Coverage mode. "Auto" reads the claim's own wording, which only
+              works when the claim says "today" — someone who just saw a story
+              on television types it without a time word at all, and no parser
+              recovers that. The choice belongs to the person checking. */}
+          <div className="mode-picker" role="group" aria-label="Coverage to search">
+            {[
+              ["auto", "Auto", "Decide from the wording of the claim"],
+              ["recent", "Recent", "Only coverage from the last month"],
+              ["historical", "Historical", "Search without a date limit"],
+            ].map(([value, label, title]) => (
+              <button
+                key={value}
+                type="button"
+                title={title}
+                className={`mode-option${mode === value ? " active" : ""}`}
+                onClick={() => setMode(value)}
+                disabled={loading}
+                aria-pressed={mode === value}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <span className="char-count">{statement.length}/2000</span>
           <button
             type="submit"
@@ -560,6 +592,23 @@ function App() {
                       Retrieval: {candidates} candidate{candidates === 1 ? "" : "s"} ·{" "}
                       {relevant} on-topic · {result.nli?.classified_count ?? 0} checked against the claim
                     </p>
+                    {/* Which slice of coverage was searched. Worth stating even
+                        when the user picked the mode, and necessary when they
+                        left it on Auto: a thin result reads very differently
+                        once you know only the last 30 days was searched. */}
+                    {result.coverage && (
+                      <p className="assessment-note">
+                        {result.coverage.window_days
+                          ? `Searched the last ${result.coverage.window_days} days`
+                          : "Searched without a date limit"}
+                        {result.coverage.reason ? ` — ${result.coverage.reason}` : ""}
+                        {result.coverage.stale_evidence_count > 0 && (
+                          `. ${result.coverage.stale_evidence_count} source` +
+                          `${result.coverage.stale_evidence_count === 1 ? " was" : "s were"}` +
+                          ` found but published too long ago to be reporting this.`
+                        )}
+                      </p>
+                    )}
                     {retrievalStatus === "SEARCH_FAILED" && (
                       <p className="assessment-note">
                         Search providers could not be reached, so nothing here reflects on the claim itself.

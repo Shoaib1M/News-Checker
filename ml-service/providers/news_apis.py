@@ -16,12 +16,19 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 import re
 import time
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from providers import SearchResult
+from providers.dates import parse_iso8601
+
+
+def _days_ago(days: int) -> datetime:
+    """The cutoff a date-filtered query should ask from."""
+    return datetime.now(timezone.utc) - timedelta(days=days)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -69,7 +76,8 @@ def _fetch_json(url: str, timeout: int = 8) -> dict:
 
 
 # ── NewsAPI ──────────────────────────────────────────────────────────
-def search_newsapi(query: str, max_results: int = 10) -> list[SearchResult]:
+def search_newsapi(query: str, max_results: int = 10,
+                   recent_days: int | None = None) -> list[SearchResult]:
     api_key = os.getenv("NEWSAPI_KEY")
     if not api_key:
         return []
@@ -77,10 +85,15 @@ def search_newsapi(query: str, max_results: int = 10) -> list[SearchResult]:
     params = {
         "q": query.strip(),
         "language": "en",
-        "sortBy": "relevancy",
+        # Relevancy is right for an undated claim and wrong for today's news:
+        # it ranks the best-worded match, which for a breaking story is
+        # routinely last year's article about the same subject.
+        "sortBy": "publishedAt" if recent_days else "relevancy",
         "pageSize": max_results,
         "apiKey": api_key,
     }
+    if recent_days:
+        params["from"] = _days_ago(recent_days).strftime("%Y-%m-%d")
     payload = _fetch_json(f"{NEWSAPI_URL}?{urlencode(params)}")
 
     results: list[SearchResult] = []
@@ -101,12 +114,14 @@ def search_newsapi(query: str, max_results: int = 10) -> list[SearchResult]:
             text="",
             provider="newsapi",
             source=article.get("source", {}).get("name", "") or "NewsAPI",
+            published=parse_iso8601(article.get("publishedAt")),
         ))
     return results
 
 
 # ── GNews ────────────────────────────────────────────────────────────
-def search_gnews(query: str, max_results: int = 10) -> list[SearchResult]:
+def search_gnews(query: str, max_results: int = 10,
+                 recent_days: int | None = None) -> list[SearchResult]:
     api_key = os.getenv("GNEWS_API_KEY")
     if not api_key:
         return []
@@ -117,6 +132,9 @@ def search_gnews(query: str, max_results: int = 10) -> list[SearchResult]:
         "max": max_results,
         "apikey": api_key,
     }
+    if recent_days:
+        params["from"] = _days_ago(recent_days).strftime("%Y-%m-%dT%H:%M:%SZ")
+        params["sortby"] = "publishedAt"
     payload = _fetch_json(f"{GNEWS_URL}?{urlencode(params)}")
 
     results: list[SearchResult] = []
@@ -134,12 +152,14 @@ def search_gnews(query: str, max_results: int = 10) -> list[SearchResult]:
             text="",
             provider="gnews",
             source=article.get("source", {}).get("name", "") or "GNews",
+            published=parse_iso8601(article.get("publishedAt")),
         ))
     return results
 
 
 # ── Guardian ─────────────────────────────────────────────────────────
-def search_guardian(query: str, max_results: int = 10) -> list[SearchResult]:
+def search_guardian(query: str, max_results: int = 10,
+                    recent_days: int | None = None) -> list[SearchResult]:
     api_key = os.getenv("GUARDIAN_API_KEY")
     if not api_key:
         return []
@@ -149,8 +169,10 @@ def search_guardian(query: str, max_results: int = 10) -> list[SearchResult]:
         "api-key": api_key,
         "page-size": max_results,
         "show-fields": "headline,trailText,bodyText",
-        "order-by": "relevance",
+        "order-by": "newest" if recent_days else "relevance",
     }
+    if recent_days:
+        params["from-date"] = _days_ago(recent_days).strftime("%Y-%m-%d")
     payload = _fetch_json(f"{GUARDIAN_URL}?{urlencode(params)}")
 
     results: list[SearchResult] = []
@@ -169,5 +191,6 @@ def search_guardian(query: str, max_results: int = 10) -> list[SearchResult]:
             text=fields.get("bodyText", "") or "",
             provider="guardian",
             source="The Guardian",
+            published=parse_iso8601(article.get("webPublicationDate")),
         ))
     return results

@@ -275,3 +275,95 @@ class TestEventVocabularyCoverage(unittest.TestCase):
                     self.events(phrasing), set(),
                     "an ambiguous word must not register as an event",
                 )
+
+
+class TestOrdinaryNewsVerbsAreRecognised(unittest.TestCase):
+    """The vocabulary drives BOTH query generation and relevance scoring, so a
+    verb missing from it is a claim the system cannot search for and cannot
+    recognise coverage of.
+
+    Measured against twenty ordinary news headlines, nineteen registered NO
+    event at all: raised, lowered, slashed, repealed, upheld, overturned,
+    pardoned, recalled, sacked, fired, clinched, devastated, evacuated, hiked,
+    plunged, soared, withdrew, halted. Rate rises and cabinet sackings are not
+    edge cases — they are most of a news cycle.
+    """
+
+    def assert_event(self, text, expected):
+        self.assertIn(expected, events_in(text), f"{text!r} -> {events_in(text)}")
+
+    def test_money_and_rates_moving(self):
+        for text, expected in (
+            ("The central bank raised interest rates", "increase"),
+            ("The company hiked prices by 10%", "increase"),
+            ("Shares soared on the news", "increase"),
+            ("Regulators lowered the cap on fees", "decrease"),
+            ("The company slashed 3,000 jobs", "decrease"),
+            ("Shares plunged after the announcement", "decrease"),
+        ):
+            with self.subTest(text=text):
+                self.assert_event(text, expected)
+
+    def test_law_and_courts(self):
+        for text, expected in (
+            ("Parliament repealed the surveillance law", "reject"),
+            ("The court overturned the conviction", "reject"),
+            ("The country withdrew from the treaty", "reject"),
+            ("The court upheld the ban", "approve"),
+            ("The president pardoned the former aide", "approve"),
+        ):
+            with self.subTest(text=text):
+                self.assert_event(text, expected)
+
+    def test_people_leaving_jobs_involuntarily(self):
+        """For retrieval a sacking and a resignation are the same event: the
+        person is out, and coverage of one is coverage of the other."""
+        for text in ("The minister was sacked after the vote",
+                     "The CEO was fired following the report",
+                     "The director was dismissed on Monday"):
+            with self.subTest(text=text):
+                self.assert_event(text, "resign")
+
+    def test_disasters_have_an_event_of_their_own(self):
+        for text in ("The storm devastated the coastal towns",
+                     "Officials evacuated the area",
+                     "A magnitude 7 earthquake struck Japan",
+                     "Wildfires spread across the valley"):
+            with self.subTest(text=text):
+                self.assert_event(text, "disaster")
+
+    def test_operations_stopping(self):
+        for text, expected in (
+            ("The firm recalled two million vehicles", "close"),
+            ("The agency halted the programme", "close"),
+            ("Trading was suspended for an hour", "close"),
+        ):
+            with self.subTest(text=text):
+                self.assert_event(text, expected)
+
+
+class TestTheWiderVocabularyStaysOffOrdinaryProse(unittest.TestCase):
+    """A looser vocabulary is only worth having if it stays selective.
+
+    Each of these was checked while widening the lists; "jump" and "climb"
+    were tried for the increase family and removed because they matched the
+    first two.
+    """
+
+    def test_everyday_senses_register_nothing(self):
+        for text in (
+            "The children jumped into the lake",
+            "He climbed the stairs slowly",
+            "The bar reopened after renovations",
+            "She stepped into the role last year",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(events_in(text), set())
+
+    def test_a_bare_fired_is_not_someone_losing_their_job(self):
+        """Police fire tear gas and rifles are fired; only the passive
+        forms mean a dismissal."""
+        for text in ("Police fired tear gas at the crowd",
+                     "He fired a shot into the air"):
+            with self.subTest(text=text):
+                self.assertNotIn("resign", events_in(text))

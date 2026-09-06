@@ -19,12 +19,19 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import NamedTuple
 
 from article_extractor import (
     extract_article,
     extract_passages,
     strip_boilerplate,
+)
+from claim_recency import (
+    ClaimTime,
+    describe_staleness,
+    document_is_stale,
+    resolve_mode,
 )
 from claim_verifier import classify_source, resolve_publisher_host
 from evidence_aggregator import ClassifiedEvidence, compute_stance
@@ -56,6 +63,8 @@ class EvidenceResult:
     # Why the stance is not what the NLI scores alone would imply. Empty
     # whenever the scores were taken at face value.
     stance_note: str = ""
+    # When the article was published, or None when the provider gave no date.
+    published: datetime | None = None
     # Host of whoever actually published the article. Differs from the URL's
     # host for aggregator links (Google News), and it is this value — not the
     # link — that decides source tier and counts independent groups.
@@ -205,6 +214,7 @@ def run_pipeline(
     max_results: int = 8,
     fetch_articles: bool = True,
     deadline: float | None = None,
+    claim_time: ClaimTime | None = None,
 ) -> PipelineOutcome:
     """Execute the complete evidence pipeline for a single claim.
 
@@ -232,7 +242,15 @@ def run_pipeline(
         deadline,
         time.monotonic() + (deadline - time.monotonic()) * _SEARCH_BUDGET_SHARE,
     )
-    raw_results, diagnostics = search_all_providers(queries, deadline=search_deadline)
+    # In recent mode every provider that supports a date filter is asked for
+    # the last month only, and Wikipedia sits the round out. Without this the
+    # feeds are recency-RANKED but not recency-FILTERED, so a query about
+    # today's story still returns last year's coverage of the same subject
+    # whenever that older coverage happens to match the words better.
+    claim_time = claim_time or resolve_mode(claim)
+    raw_results, diagnostics = search_all_providers(
+        queries, deadline=search_deadline, recent_days=claim_time.window_days,
+    )
     diagnostics_dicts = [d.to_dict() for d in diagnostics]
     candidate_count = len(raw_results)
 
@@ -258,6 +276,7 @@ def run_pipeline(
             "text": r.text or r.snippet,
             "source": r.source,
             "provider": r.provider,
+            "published": r.published,
         }
         for r in raw_results
     ]
@@ -307,6 +326,10 @@ def run_pipeline(
 
     nli_service = get_nli_service()
     evidence_results: list[EvidenceResult] = []
+    # Documents that were about the claim but too old to be reporting it.
+    # This is the difference between 'nobody reported this' and 'nobody
+    # reported it THIS MONTH', and the absence verdict must not confuse them.
+    stale_count = 0
 
     for doc in selected:
         url = doc["url"]
@@ -401,6 +424,18 @@ def run_pipeline(
                     f"states {stated.text} where the claim says {claimed.text}"
                 )
 
+        # Entailment has no clock. "India's prime minister resigned on Tuesday"
+        # entails "the prime minister resigned this morning" perfectly — and if
+        # that article is from 2014 the entailment is a coincidence, not a
+        # confirmation. Support is withdrawn, never turned into a
+        # contradiction: an old article is not evidence that today's event did
+        # not happen, it is just not evidence that it did.
+        published = doc.get("published")
+        if stance == "supports" and document_is_stale(claim_time, published):
+            stance = "unclear"
+            stance_note = describe_staleness(published)
+            stale_count += 1
+
         evidence_results.append(EvidenceResult(
             url=url,
             title=title,
@@ -418,6 +453,7 @@ def run_pipeline(
             nli_available=nli_available,
             publisher=publisher_host,
             stance_note=stance_note,
+            published=published,
         ))
 
     # ── Stage 6: Evidence aggregation ────────────────────────────────
@@ -454,6 +490,10 @@ def run_pipeline(
     stance["retrieval_status"] = retrieval_status
     stance["retrieval_diagnostics"] = diagnostics_dicts
     stance["candidate_count"] = candidate_count
+    # "Nobody reports this" and "nobody reports it THIS MONTH" are different
+    # findings, and only the first is a statement about the world.
+    stance["stale_evidence_count"] = stale_count
+    stance["mode"] = claim_time.mode
     stance["relevant_source_count"] = relevant_count
 
     return PipelineOutcome(

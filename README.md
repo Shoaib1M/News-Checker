@@ -548,6 +548,42 @@ cd ml-service && python stance_sweep.py            # add --show-errors for the
 # that peaks — a peak a 0.02 step falls off is a fit to the corpus, not to the
 # model.
 
+# Measuring accuracy on TODAY's news. This is the answer to "how accurate is
+# it?" — there is no labelled corpus of today's news and there cannot be
+# (labelling it is the task), so the benchmark builds one: today's real
+# headlines are the positive class, and corrupted versions of them are the
+# negative class.
+
+cd ml-service && python news_benchmark.py            # add --limit / --save
+#
+#   Real headlines (12)        — can it confirm what was actually reported?
+#     confirmed          ..    recall, and an UPPER bound
+#     not established    ..    a shortfall, not a false statement
+#     stated as false    ..    a wrong answer
+#
+#   Corrupted headlines (9)    — does it refuse what the coverage contradicts?
+#     rejected           ..
+#     not established    ..    refused, but without finding the refutation
+#     confirmed as true  ..    a wrong answer
+#
+#   WRONG-ANSWER RATE  ../..   confident statements that were false
+#
+# The two halves are never averaged, because they measure different things:
+#
+#   - The confirmation rate is an upper bound. The headlines come from the
+#     same indexes the system searches, so confirming one is closer to "can it
+#     find the article it came from" than "can it establish a fact".
+#   - Rejecting corrupted headlines is necessary, not sufficient. Real
+#     misinformation is built to be plausible and often carries supporting
+#     coverage from poor sources; a corrupted headline carries none.
+#
+# The wrong-answer rate is the number worth quoting: missing a true claim is a
+# shortfall, asserting a false one is the failure a fact-checker must not make.
+# Needs live network, like check_providers.py. The corpus construction and
+# scoring are unit-tested offline (tests/test_news_benchmark.py) — a corrupted
+# headline that is ungrammatical rather than false tests the parser, not the
+# fact-checker, and would make the number meaningless.
+
 # Server — 24 tests: auth middleware, history pagination, proxy validation.
 # No database or network required.
 cd server && npm test

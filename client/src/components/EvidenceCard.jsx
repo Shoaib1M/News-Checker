@@ -58,6 +58,7 @@ export default function EvidenceCard({ evidence, index }) {
     source_tier,
     nli_available,
     stance_note,
+    published,
     publisher,
   } = evidence;
 
@@ -66,6 +67,14 @@ export default function EvidenceCard({ evidence, index }) {
   // aggregator the URL's host names the aggregator, so every card would
   // otherwise read "news.google.com".
   const domain = publisher || source || getDomain(url);
+  // Providers differ on whether they give a date at all, so this is often
+  // absent. When it is present it is the fastest way for a reader to see why
+  // a source did or did not count towards a claim about today.
+  const publishedLabel = published
+    ? new Date(published).toLocaleDateString(undefined, {
+        year: "numeric", month: "short", day: "numeric",
+      })
+    : "";
   const tierLabel = getSourceTierBadge(source_tier);
 
   // Determine if this evidence supports or contradicts
@@ -140,6 +149,10 @@ export default function EvidenceCard({ evidence, index }) {
           <p className="passage-label">Key passage:</p>
           <p className="passage-text">"{best_sentence}"</p>
         </div>
+      )}
+
+      {publishedLabel && (
+        <p className="evidence-date">{publishedLabel}</p>
       )}
 
       {/* Why this source is not counted the way its scores read. Shown only
