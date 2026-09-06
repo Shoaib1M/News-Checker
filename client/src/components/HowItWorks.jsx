@@ -32,11 +32,22 @@ import {
 // Final architecture for the end-to-end fact-checking pipeline.
 const PIPELINE_STEPS = [
   {
+id: "reading-the-submission",
+icon: <Package className="hiw-step-icon" />,
+title: "Reading the submission",
+short: "Find the proposition inside what was actually pasted",
+detail: `People don't submit propositions. They submit what they saw, with the framing they saw it in: "is it true that…?", a headline in quotes with "- Reuters, March 2024" after it, a pasted link in front of the sentence, emoji and hashtags around it.
+
+Every stage after this one reads the claim — including the entailment model, which uses it as its hypothesis — so that packaging used to reach all of them. A link made the site it pointed at into one of the claim's entities; a source credit did the same for the publisher's name; and "is it true that the prime minister of India resigned?" was classified as not a claim and never searched at all.
+
+We strip the packaging and keep the proposition. What the claim asserts is never touched: negation, hedges and quantifiers all change the meaning, so "did not", "may", "all" and "only" survive exactly as written, and you always see your own words back rather than our cleaned-up version.`,
+  },
+  {
 id: "claim-triage",
 icon: <Filter className="hiw-step-icon" />,
 title: "Claim triage",
 short: "Decide what kind of question the claim even poses",
-detail: `Before any searching, we work out whether there is something here that evidence could settle. A question, a pasted link, an unparseable string, or a value judgment is reported as such and never searched — telling someone "we couldn't verify this" when there was no proposition to verify is misleading.
+detail: `Before any searching, we work out whether there is something here that evidence could settle. An open question, an unparseable string, or a value judgment is reported as such and never searched — telling someone "we couldn't verify this" when there was no proposition to verify is misleading. ("Why did the prime minister resign?" is a real question and is refused; "is it true that the prime minister resigned?" is a claim in a question's clothing, and is checked.)
 
 A claim about a future event is marked as such: nothing can make it true or false today, so the most that can be established is whether it has been announced. We also judge whether a true version of the claim would necessarily have been reported, which is what later licenses treating an absence of coverage as meaningful.`,
   },
