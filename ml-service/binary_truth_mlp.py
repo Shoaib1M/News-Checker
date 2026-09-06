@@ -343,7 +343,7 @@ def make_prediction_features_batch(
     non-zero history counts. The shipped model is trained statement-only with
     history zeroed (see `main()` below), so it was being measured on a
     distribution it had never seen, and reported **56.9%** for a model that
-    scores **62.4%** on the inputs it actually receives.
+    scores **61.9%** on the inputs it actually receives.
 
     Everything that scores this model now goes through here, so evaluation and
     serving cannot drift apart again. Any metadata a caller does not supply

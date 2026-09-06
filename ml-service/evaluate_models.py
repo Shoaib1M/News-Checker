@@ -299,7 +299,7 @@ def main():
     # request uses. This block previously built its own features from
     # build_text_input(test_df) -- statement plus speaker, job, state, party and
     # context -- with real non-zero history counts, none of which the shipped
-    # model was trained on. It scored 56.9% for a model that gets 62.4% on the
+    # model was trained on. It scored 56.9% for a model that gets 61.9% on the
     # inputs it actually receives.
     X_test_bt = make_prediction_features_batch(
         bt_vectorizer, train_max_values, test_df["statement"].fillna("").astype(str)

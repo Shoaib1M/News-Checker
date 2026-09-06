@@ -1245,3 +1245,28 @@ as a 502.
 The constraint is gone; values outside the set are normalised, case included.
 A drift test asserts no pattern has been re-added — verified to fail when one
 is, along with two behavioural tests.
+
+### Documentation drift found by sweeping for stale figures
+
+`README.md`
+
+Correcting the model number surfaced four claims the README was making that the
+code had outgrown:
+
+- **"No temporal-validity checking … a known gap, not yet implemented."** It
+  *is* implemented — coverage modes, provider date filters and the staleness
+  guard. The bullet now describes what actually happens and the three real
+  limits that remain (providers that supply no date, the deliberately generous
+  45-day window, and no comparison against an article's own internal timeline).
+- **"The legacy MLP is barely better than guessing … +0.6 points."** It is
+  +5.5 points with a confidence interval clearing the baseline. The conclusion
+  (evidence-first) survives, but for a better reason: not that the model is
+  weak, but that judging a claim from its wording is not the task the user
+  asked, however well it is done.
+- **"There is currently no automated test suite for `server/`."** There are 24.
+- **"93 tests"** for `ml-service`, in two places. There are 446.
+
+A number in prose has no drift guard, which is why the sweep was worth doing.
+The figures that *do* have guards — the response schema, the non-numeric
+statuses, the stance rule, the evaluation feature path — are the ones that
+have stayed correct.

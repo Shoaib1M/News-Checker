@@ -488,8 +488,10 @@ The first evidence check (a non-deterministic claim) triggers the NLI model down
 ## Testing
 
 ```bash
-# ML service — 93 tests covering claim triage, claim decomposition, relevance
-# and action filtering, query generation, NLI label-mapping safety, evidence
+# ML service — 446 tests covering claim normalisation and triage, claim
+# decomposition, coverage modes and article dating, relevance and action
+# filtering, query generation, numeric-consistency and boilerplate guards,
+# HTML extraction hazards, NLI label-mapping safety, the stance rule, evidence
 # aggregation, absence-of-coverage rules, provider failure/diagnostics
 # handling, keyless-provider parsing, pipeline time budgets, and end-to-end
 # verdict behaviour for every claim shape (tests/test_claim_edge_cases.py).
@@ -603,7 +605,7 @@ npm run lint
 npm run build
 ```
 
-There is currently no automated test suite for `server/` (the Express layer) — this is a known gap, not an oversight; see [Known limitations](#known-limitations).
+`server/` has 24 tests (`cd server && npm test`, Node's built-in runner, no database or network required) covering the auth middleware, history pagination and the `/api/check` proxy's validation and error mapping.
 
 ## Running this for a demo
 
@@ -731,7 +733,7 @@ newschecker/
 │   ├── tfidf.py                    From-scratch TF-IDF vectorizer (feeds the legacy MLP only)
 │   ├── classifier.py / mlp_classifier.py   Experimental baselines, offline evaluation only
 │   ├── evaluate_models.py / evaluate_production_model.py   Offline evaluation scripts
-│   └── tests/                      93 tests across the modules above, incl.
+│   └── tests/                      446 tests across the modules above, incl.
 │                                    test_claim_edge_cases.py (end-to-end verdicts)
 ├── docs/screenshots/              README images
 ├── IMPROVEMENTS.md                 Dated engineering log of major fixes/audits
@@ -742,14 +744,18 @@ newschecker/
 
 Being direct about these matters more than pretending they don't exist:
 
-- **`server/` test coverage is partial.** `npm test` in `server/` runs 17 tests covering the auth middleware, history pagination, and the check proxy's input validation — no database or network needed. The route handlers' database paths are still untested; that would need an in-memory Mongo.
+- **`server/` test coverage is partial.** `npm test` in `server/` runs 24 tests covering the auth middleware, history pagination, and the check proxy's input validation — no database or network needed. The route handlers' database paths are still untested; that would need an in-memory Mongo.
 - **Retrieval quality depends on live web search.** An unconfigured checkout retrieves from Google News RSS, Wikipedia and DuckDuckGo; adding `GNEWS_API_KEY` / `GUARDIAN_API_KEY` / `NEWSAPI_KEY` widens it further. The system is designed to abstain rather than force a weak match — but recall is still bounded by what's configured and reachable at request time, and `GET /api/health` is the place to check which providers are actually live.
 - **Absence-of-coverage is an inference, not a proof.** `unsupported_no_coverage` says the providers we could reach returned nothing asserting the claim. Its guards (salience, candidate volume, non-negation, working NLI, working search) exist to keep it honest, and confidence scales with how much was searched — but a very fresh story, a non-English source, or a story outside the indexed providers can still produce it wrongly. It is deliberately never phrased as "false".
 - **English only.** Claims in other languages are detected and reported as out of scope rather than checked. The detection is a heuristic over character scripts and function words; it can miss a short Latin-script sentence, in which case the claim falls through to the ordinary "no assertion found" path — a worse message, but not a wrong verdict.
 - **Claim triage is heuristic.** `claim_triage.py` classifies by pattern, not by parsing. It handles the shapes in `tests/test_claim_edge_cases.py` — including the traps that broke it during development (factual superlatives read as opinions, irregular past tenses read as non-assertions, pasted links read as claims) — but an unusual phrasing can still land in the wrong bucket. The failure is designed to be safe in one direction: an over-admitted claim gets searched, an over-rejected one refuses to check something real, so the thresholds lean toward admitting.
-- **No temporal-validity checking.** The pipeline doesn't currently compare an article's publish date against the claim's implied timeframe — a stale article about an old event could theoretically be classified as evidence for a claim about current events, if it happens to pass relevance and NLI. This is a known gap, not yet implemented.
+- **Temporal checking is coarse.** The pipeline *does* now compare an article's publish date against the claim's timeframe (see [Coverage modes](#nli-model--memory) — `recent` restricts retrieval to the last 30 days and refuses to let an older article confirm the claim). Three limits remain: providers differ on whether they supply a date at all — Wikipedia and DuckDuckGo supply none, and an undated document is never treated as stale, because deleting real evidence over a missing field is the worse error; the staleness window (45 days) is deliberately wider than the retrieval window, so a document from just outside it still counts; and nothing compares a date against the article's *own* internal timeline, so a recent retrospective about an old event is still readable as current coverage.
 - **Claim decomposition is regex-based, not a real parser.** `claim_decomposer.py` uses pattern matching for entities/predicates/negation/modality, not dependency parsing or a trained NER model. It works well for the claim shapes it's been tested against but isn't as robust as a full NLP pipeline would be.
-- **The legacy MLP is barely better than guessing, and that is the point.** On the LIAR test set it scores **56.9%** against a **56.4%** majority-class baseline — **+0.6 points** over always answering "true". Telling true claims from false ones on text alone, with no evidence, is close to a coin flip. That result is why the architecture is evidence-first and why the verdict never reads the model's output. The Evaluation page states the comparison directly rather than showing the accuracy figure on its own.
+- **The legacy MLP works, and still cannot be a fact-checker.** On the LIAR test set it scores **61.88%** (95% CI 59.12–64.48) against a **56.35%** majority-class baseline. The interval's lower bound clears the baseline, so that +5.5 points is a real effect rather than split luck, and the model is calibrated (ECE 0.046). It is a respectable result for judging a claim from its wording alone.
+
+  It is still not a fact-checker, and the distinction is the architecture's whole premise: 62% on a dated US-political corpus says nothing about whether a specific claim made today is true, because the label is not deducible from the words. Only evidence settles that. So the verdict never reads this model's output — not because the model is weak, but because the task it solves is not the task the user asked. The Evaluation page states the baseline next to the accuracy rather than showing the figure on its own.
+
+  (This number was itself a bug for most of the project's life: the model was scored on speaker metadata it was never trained on, reporting 56.9% — see `IMPROVEMENTS.md` bug 34.)
 
 ## License
 
