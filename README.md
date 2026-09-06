@@ -508,6 +508,15 @@ python -m pytest tests/ -q
 # No database or network required.
 cd server && npm test
 
+# Client — render smoke test. Loads every route in a built client and fails on
+# any runtime error. `npm run build` and eslint BOTH pass on a component that
+# references an undefined identifier, so a missing import ships as a blank
+# white page with every check green — this is what catches that.
+# Playwright is not a dependency; the script skips itself with instructions
+# when it is absent.
+cd client && npm run build && npx vite preview --port 4173 &
+npm run smoke
+
 # Client — lint + production build
 cd client
 npm run lint
