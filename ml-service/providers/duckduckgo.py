@@ -63,41 +63,61 @@ class _DDGParser(HTMLParser):
         self.results: list[dict] = []
         self._in_link = False
         self._in_snippet = False
-        self._url = ""
         self._title_parts: list[str] = []
         self._snippet_parts: list[str] = []
+        # The result under construction. DuckDuckGo emits the title link
+        # first and the snippet element after it, so a result cannot be
+        # finished when its title's </a> fires — which is what the previous
+        # version did, giving every DuckDuckGo result an empty snippet.
+        # Relevance was then scored on the headline alone, and since
+        # DuckDuckGo is the always-on fallback in an unconfigured checkout,
+        # that was the default experience.
+        self._pending: dict | None = None
+
+    def _flush(self) -> None:
+        """Emit the result under construction, if it has a URL and a title."""
+        if self._pending and self._pending.get("url") and self._pending.get("title"):
+            self.results.append(self._pending)
+        self._pending = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         cls = attrs.get("class", "")
         if tag == "a" and "result__a" in cls:
+            # A new result begins; the previous one is complete.
+            self._flush()
             self._in_link = True
-            self._url = _clean_url(attrs.get("href", ""))
+            self._pending = {"url": _clean_url(attrs.get("href", "")),
+                             "title": "", "snippet": ""}
             self._title_parts = []
             self._snippet_parts = []
-        if tag in {"a", "div"} and "result__snippet" in cls:
+        if tag in {"a", "div", "span"} and "result__snippet" in cls:
             self._in_snippet = True
+            self._snippet_parts = []
 
     def handle_endtag(self, tag):
         if tag == "a" and self._in_link:
             self._in_link = False
-            title = " ".join(self._title_parts).strip()
-            snippet = " ".join(self._snippet_parts).strip()
-            if self._url and title:
-                self.results.append({
-                    "url": self._url, "title": title, "snippet": snippet,
-                })
-        if tag in {"a", "div"} and self._in_snippet:
+            if self._pending is not None:
+                self._pending["title"] = " ".join(self._title_parts).strip()
+        if tag in {"a", "div", "span"} and self._in_snippet:
             self._in_snippet = False
+            if self._pending is not None:
+                self._pending["snippet"] = " ".join(self._snippet_parts).strip()
 
     def handle_data(self, data):
         text = data.strip()
         if not text:
             return
-        if self._in_link:
-            self._title_parts.append(text)
         if self._in_snippet:
             self._snippet_parts.append(text)
+        elif self._in_link:
+            self._title_parts.append(text)
+
+    def close(self):
+        """Emit the final result, which has no following result to flush it."""
+        super().close()
+        self._flush()
 
 
 def search(query: str, max_results: int = 10) -> list[SearchResult]:
@@ -106,6 +126,7 @@ def search(query: str, max_results: int = 10) -> list[SearchResult]:
     html = _fetch(SEARCH_URL.format(query=encoded))
     parser = _DDGParser()
     parser.feed(html)
+    parser.close()  # flushes the last result
 
     seen: set[str] = set()
     results: list[SearchResult] = []

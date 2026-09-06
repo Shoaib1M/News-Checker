@@ -589,3 +589,364 @@ investigation missed:
 - **Not verified here:** live reachability of Google News RSS and Wikipedia.
   The sandbox proxy blocks both hosts, so only their parsers are tested,
   against real payload shapes. `GET /api/health` reports live provider state.
+
+---
+
+## 2026-09-06 — Bug hunt: probing each stage instead of reading it
+
+### The instruction
+
+> "Go through the entire codebase and keep testing for bugs where there could
+> be an error or a wrong answer for a claim entered by a user, and keep fixing
+> it... keep turning the params again and again of the web scraping and the
+> stance part."
+
+### Method
+
+Every finding below came from *running* a stage against hand-built inputs and
+reading what came out — not from reading the code. Several of these had been
+read past repeatedly, including by me.
+
+### The five that inverted or destroyed the answer
+
+**1. A fact-check counted as evidence FOR the claim it debunks.** A debunking
+article quotes the claim it refutes — "Posts claim the United States banned
+Google in all its cities" — which NLI scores as strong entailment, because the
+claim is in the sentence. The code found the passage with the highest
+`max(entail, contradict)` and read *both* scores off it. The quote (0.88) beat
+the refutation (0.80), its near-zero contradiction score came with it, and a
+PolitiFact article was recorded as supporting the claim at 0.95 source weight
+— enough on its own to carry a verdict.
+
+**2. Credible sources were never read.** Only the top eight candidates by
+lexical relevance are classified. That is backwards for a viral claim: the
+posts repeating it use its exact wording, the debunkings do not. Measured on a
+realistic pool — eight rumour blogs at 0.78–0.94, a PolitiFact fact-check at
+0.735. It ranked *ninth*.
+
+**3. Claim splitting deleted the subject.** "The U.S. government banned Google
+across all cities" became "government banned Google across all cities". No
+abbreviation handling, and short fragments discarded rather than aborting the
+split. This happens before anything is searched, so every later stage was
+working on a claim the user never made.
+
+**4. The deterministic layer answered the wrong question at "very high"
+confidence.** "It is false that a triangle has four sides" — a true statement —
+came back *false*. "Nobody claims WWII ended in 1945" — a false statement —
+came back *true*. That layer skips retrieval and NLI entirely, so nothing
+downstream can correct it.
+
+**5. GOOGLE_CLIENT_ID unset was an auth bypass.** It is passed to
+`verifyIdToken` as `audience`, and google-auth-library skips the audience check
+entirely when that is undefined (`oauth2client.js:738`). A Google ID token
+minted for any other application would authenticate — and sign-in appears to
+work, which is what makes it dangerous rather than merely broken.
+
+### Retrieval
+
+None of the four dispatched queries contained the claim's verb — for "the
+prime minister of India resigned this morning", two of the four were built on
+"morning". NLI saw only an article's first sentences, so a story reporting a
+resignation in its eighth sentence arrived as six sentences about the weather.
+Deduplication merged "must be banned" with "must **not** be banned" (0.92
+Jaccard). The keyed providers' articles were never fetched, because their
+31-word excerpt sat just above a 30-word threshold. Every DuckDuckGo result had
+an empty snippet. The pronoun "us" matched the United States while "Indian" did
+not match India. A headline's own dash clause became a publisher identity and
+inflated the independence count.
+
+### Stance
+
+The verdict was not monotonic: one Reuters article entailing at 0.93 gave
+`supported`, and adding three articles that said nothing either way gave
+`insufficient_evidence`. "Mixed" fired on raw counts, so five strong reports
+tied with one 0.40 blog. Independence was documented but never applied — four
+copies of one wire story counted as four confirmations at high confidence.
+
+### Tuning, measured
+
+Built a twenty-pair labelled corpus and swept the relevance threshold:
+
+    0.30-0.48   precision 0.91   recall 1.00   F1 0.95   <- current
+    0.50+       precision 1.00   recall 0.80   F1 0.89
+
+**Left it alone.** Raising it buys one point of precision for two genuinely
+relevant articles, and the costs are not symmetric: a rejected document is
+gone, and enough wrong rejections become "no credible source reports this" — a
+statement about the world. The one surviving false positive scores
+*identically* to a true positive on all five dimensions; no threshold separates
+them, and tuning further would only overfit. That reasoning now sits next to
+the constants.
+
+### What the fixes compose to
+
+`tests/test_misinformation_scenario.py`, on a viral false claim with eight
+rumour posts and two credible refutations:
+
+    VERDICT : evidence contradicts the claim | medium confidence
+    supporting 6 (unclassified) · contradicting 2 (politifact, reuters)
+
+Six sources "support" the claim and the verdict is `contradicted`.
+
+### A duplicated rule that drifted three times
+
+The same rule existed in two places and the copies diverged, three separate
+times: the subjective-superlative pattern (claim_triage *and*
+knowledge_verifier, so fixing one changed nothing), the independent-publisher
+count, and the list of outcomes that must not show a number — which is why a
+saved check of "asdkjh asdkjh" appeared in the history list as an amber **50**.
+Each is now one module with a test asserting the copies match.
+
+### A crash I shipped, and the gap it revealed
+
+Adding an icon without importing it blanked *every* route. `npm run build` and
+`eslint --max-warnings=0` both returned 0: Vite does not resolve names at build
+time and the lint config does not flag it in JSX. Only rendering caught it.
+`npm run smoke` now loads every route and fails on any runtime error; verified
+against that exact bug.
+
+### Verification
+
+254 ml-service tests (98 at the start of this round), 24 server tests closing
+the README's "biggest remaining gap", render smoke test over four routes, and
+`verdict_sweep.py` across 25 claim shapes. Worst-case timing re-measured after
+the provider count doubled: 30s against a 45s budget with everything hanging,
+reported as `SEARCH_FAILED` so absence reasoning stays blocked.
+
+**Not verified:** live reachability of any provider. The sandbox proxy blocks
+them, so only the parsers are tested, against real payload shapes.
+
+### Bug 23 — a different figure counted as confirming the claim
+
+`evidence_pipeline.py`, `numeric_consistency.py` (new)
+
+"The vaccine is 95% effective" and "the vaccine is 62% effective" differ by two
+digits. Every relevance signal in the pipeline is built on word overlap, so all
+of them fire; and a sentence that close to the claim is exactly what a textual
+entailment model scores as entailment. Nothing compared the numbers.
+
+Reproduced through the real pipeline: three independent publishers — Reuters,
+AP, the BBC — all reporting **62%**, against a claim of **95%**, returned
+`supported`. Removing the guard makes those tests fail again, which is how the
+reproduction is kept honest.
+
+The guard is deterministic and does not depend on the NLI model. A conflict
+requires all three of: the claim asserts a quantity, no passage states it, and
+some passage states a different one **of the same kind describing the same
+attribute**. The third condition is what keeps it off claims where the number
+is incidental — "Musk bought the Eiffel Tower for 3 trillion dollars" against
+an article mentioning a 400 billion net worth is not a conflict, and an article
+confirming the purchase is not discarded over the price.
+
+A conflict only ever *withdraws* support; it never creates a contradiction.
+Two figures can differ because they measure different things ("62% against
+severe disease" does not refute "95% overall"), and this cannot tell those
+apart. The honest reading is "about the claim, but does not state its figure".
+
+Years are deliberately inert: any two years in the same era are within the 2%
+tolerance, so "by 2050" against "by 2035" never registers. A date needs
+comparing against a timeline, not string matching.
+
+The evidence card now says *"This article states 62% where the claim says
+95%"*, so a source that reads as relevant but counts as neutral does not look
+like a bug.
+
+### Bug 24 — a paywalled page deleted the only real sentence in the document
+
+`article_extractor.py`, `evidence_pipeline.py`
+
+A paywalled article ships a few hundred words of subscription pitch and none of
+the story. Two things went wrong with that page, and the second is the serious
+one.
+
+Passage selection sent the pitch to NLI. For "the prime minister of India
+resigned this morning", four of the five classified passages were *"Subscribe
+today to continue reading this article"*, *"Your subscription helps fund our
+newsroom"*, *"Choose a plan that works for you"* and *"Unlimited digital access
+from just $1 a week"*. The module docstring had claimed since the beginning
+that it strips "navigation, ads, footers, and cookie text". No such filter
+existed.
+
+Worse: the pipeline replaced the provider's snippet with the fetched page
+whenever the fetch was **longer**. The snippet was the one real sentence in the
+document — *"India's prime minister resigned on Tuesday after coalition talks
+collapsed"*, 13 words — against 38 words of marketing copy. Fetching the
+article destroyed the only usable text in it. The comparison now measures what
+each version says, with furniture removed, rather than how long it is.
+
+The filter matches **phrases**, never bare words, and any sentence sharing
+vocabulary with the claim is exempt whatever it matched. The dangerous failure
+runs the other way: an article about streaming prices is full of the word
+"subscription", and a filter that ate it would delete the story instead of the
+furniture. Both directions are pinned by tests — an article about subscription
+prices keeps *"your subscription will renew automatically"* while losing
+*"subscribe today to continue reading"*, and one about cookie rules keeps its
+reporting while losing the consent banner.
+
+### Bug 25 — page JavaScript was extracted as article prose
+
+`article_extractor.py`
+
+`HTMLParser` hands back the body of `<script>` and `<style>` as ordinary
+character data, and the parser collected any character data inside a `<p>`.
+Inline scripts sit inside content blocks constantly — ad slots, embeds,
+analytics beacons — so their source was appended to the paragraph around them.
+
+Reproduced with a config blob a page might plausibly carry:
+
+```
+<p>The prime minister resigned on Tuesday after the vote.
+   <script>var d={"headline":"Google banned in all US cities"};</script></p>
+
+extracted: 'The prime minister resigned on Tuesday after the vote.
+            var d={"headline":"Google banned in all US cities"};'
+```
+
+That string would be sent to NLI as a sentence the publisher wrote. It is the
+one category of text that must never be treated as reporting — it is not the
+publisher's prose, and on a page carrying third-party tags it is not
+necessarily the publisher's content at all. `script`, `style`, `noscript`,
+`template`, `svg`, `iframe`, `code` and `pre` are now never read.
+
+### Bug 26 — pages that don't use `<p>` contributed nothing
+
+`article_extractor.py`
+
+An article body built from `<div>` — AMP templates and several large CMSs —
+yielded **zero** paragraphs. The document then fell back to whatever snippet
+the provider supplied, however much the page actually reported.
+
+`extract_article` now falls back to reading the page as flat text when the
+markup-aware pass finds nothing. `<p>` carries the publisher's own judgement
+about what a paragraph is, so this is deliberately the second choice, and it is
+guarded: non-prose elements are removed first (so the fallback cannot
+reintroduce the leak above), block-level tags become line breaks, and a line
+counts as prose only if it is at least eight words, ends like a sentence, and
+is not boilerplate. On the reproduction page that yields the two reported
+sentences and drops the nav bar, the footer and the script.
+
+The block-boundary step matters more than it looks: without it the nav bar ran
+straight into the lede — *"Home World Business Sport The minister resigned on
+Tuesday."* — as a single unsplittable sentence, so the navigation could not be
+filtered off the front of the story.
+
+### Tuning the stance thresholds — the tool, and why not the numbers
+
+`stance_sweep.py` (new), `evidence_pipeline.decide_stance` (extracted)
+
+`STANCE_THRESHOLD` (0.35) and `STANCE_DOMINANCE` (1.6) decide, for every
+document the system reads, whether it counts as supporting the claim,
+contradicting it, or neither. They were chosen by hand, and changing them by
+hand is how a fact-checker quietly starts giving different answers — the tests
+pin the *rule*, not the settings.
+
+**I could not measure them here.** `huggingface.co` is blocked from this
+sandbox by the same proxy policy that blocks the news hosts (403 on CONNECT),
+so the NLI model cannot be downloaded and no real score exists to sweep. Any
+number I moved these to would have been intuition dressed up as tuning, which
+is the opposite of how the relevance threshold was settled. They are unchanged.
+
+What is shipped instead is the measurement: a 23-pair labelled corpus and a
+grid sweep over both constants, reporting per-direction precision and recall
+and a column counting **invented positions** — documents recorded as taking a
+stance they do not take. That column matters more than accuracy, because the
+two errors are not symmetric: too low a threshold manufactures confirmations
+out of coverage that said nothing, too high a one reports "insufficient
+evidence" about a claim the sources addressed, and a wrong answer is worse than
+no answer. The corpus is deliberately majority-neutral — most of what retrieval
+returns takes no position, and a corpus of clean entailment pairs would tune
+for a distribution the system never sees.
+
+The rule itself was extracted from the middle of the pipeline into
+`decide_stance(support, contradiction, threshold, dominance)` so the sweep
+measures the shipped decision rather than a copy of it. Three rules in this
+codebase have already drifted from their duplicates; a sweep against a
+reimplementation would report on a procedure the system does not run. Two
+tests guard it: one asserts the pipeline calls the function, another that no
+second copy of the comparison survives in the file.
+
+Writing the sweep's own tests found a bug in the sweep: the corpus labels a
+document that takes no position `"neutral"` while the rule returns
+`"unclear"`, so every correctly-classified neutral row — the largest group —
+was scored as an error, understating accuracy exactly where the corpus is
+densest.
+
+### Bug 27 — the most natural way to ask a fact-checker a question was refused
+
+`claim_normalizer.py` (new), `main.py`
+
+Every stage reads the claim: triage, entity extraction, query generation, and
+NLI, which uses it as the hypothesis. All of them were reading the **raw
+submission** — and people do not submit propositions. They submit what they
+saw, with the framing they saw it in. Measured against the real stages:
+
+| submitted | what broke |
+|---|---|
+| `is it true that the prime minister of india resigned?` | triaged `not_a_claim`, `search_worthwhile=False` — **never searched at all** |
+| `https://twitter.com/x/status/123 The PM of India resigned` | entities `['India', 'Twitter']`; a dispatched query was `India Twitter resigned` |
+| `"Google banned in US" - Reuters, March 2024` | entities `['Google', 'Reuters', 'March', 'United States']`; a dispatched query was `Google Reuters banned` |
+| `🚨🚨 GOOGLE BANNED IN ALL US CITIES 🚨🚨 #breaking` | the first dispatched query is the submission itself, so the emoji and hashtags went verbatim to a news index |
+
+The first row is the serious one. "Is it true that …?" is how people ask a
+fact-checker a question, and the answer was *"no verifiable claim found"* —
+which reads as "your input was gibberish" rather than "I did not look".
+
+`normalize_claim` removes wire labels, pasted URLs, hashtags, handles, emoji,
+trailing source attributions, wrapping quotes, repeated emphasis punctuation
+and conversational framing. The user's own text is untouched in the response,
+the UI and history; only the machinery sees the normalised form.
+
+**The risk runs the other way, and that is most of the file.** A normaliser
+that trims one word too many answers a different question from the one asked,
+so negation, hedges and quantifiers are never touched, `"It is true that X"`
+(an assertion) is left alone where `"Is it true that X?"` (a question about X)
+is unwrapped, a real question like *"Why did the prime minister resign?"* is
+still correctly refused, `"Reuters reported that the PM resigned"` keeps its
+attribution because there the attribution **is** the claim, and a submission
+that is nothing but packaging is returned unchanged so triage can say so.
+Emoji are stripped by Unicode category rather than a codepoint range, which is
+what keeps accented letters and non-Latin scripts intact.
+
+Writing the tests found a bug in the normaliser: a trailing "can someone
+confirm" was removed without the comma before it, and that comma then
+travelled into every dispatched query.
+
+### Bug 28 — "no credible source reports this", said with three quarters of the press unread
+
+`evidence_aggregator.py`, `main.py`
+
+`unsupported_no_coverage` is the strongest statement this system makes about
+the world. Six guards protected it — the search must have run, returned a real
+pool, found nothing either way, on a high-salience non-negated claim, with NLI
+available — and one hole ran straight through them.
+
+`SEARCH_PARTIAL` was accepted, and partial means **some providers failed**. The
+only breadth check was the candidate count, which doesn't care where the
+candidates came from. So one working provider returning four results was
+enough:
+
+```
+SEARCH_PARTIAL, 4 candidates, high salience
+  -> "no credible source reports this"
+```
+
+Three providers blocked or rate-limited, one answered, and the system reported
+on the state of the press. That is the failure mode `check_providers.py` exists
+to warn about, arriving as a verdict instead of a diagnostic.
+
+Absence now also requires that at least two providers actually **answered**.
+The distinction that matters is between silence and blindness: a provider
+returning `no_results` looked and found nothing, which is what
+absence-of-coverage is made of; a provider that `failed` never looked, and
+counting it turns an outage into a finding. Counted per provider rather than
+per query — the same provider answering four queries is still one view of the
+press.
+
+`providers_answered` is a **required** parameter, not a defaulted one. A
+default would let a caller skip the guard by forgetting it, and what is on the
+other side of it is a confident claim about the world.
+
+**The existing tests agreed with the bug.** The shared harness stubbed exactly
+one provider, so every absence-of-coverage test was asserting that a single
+provider is enough. The harness now stubs two, which is what a working search
+looks like, and a new test pins that one is not enough.

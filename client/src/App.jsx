@@ -33,6 +33,53 @@ import HowItWorks from "./components/HowItWorks";
 // The backend API URL (e.g., http://localhost:3000)
 const API_BASE = import.meta.env.VITE_API_URL || "";
 
+/*
+PURPOSE: Turn an HTTP failure into something a person can act on.
+
+WHY THIS EXISTS: The raw strings are backend-speak — "ML service error.",
+"ML service timed out." — and read as if the system had judged the claim.
+Every message here says what failed and what to do, and none of them can be
+mistaken for a verdict. The technical detail is kept, because the most common
+cause is a misconfigured FASTAPI_URL and hiding that wastes an afternoon.
+*/
+/*
+PURPOSE: How many independent publishers actually back the verdict shown.
+
+WHY THIS EXISTS: The two sides can disagree, and source tiering means the
+smaller side can win — two credible publishers outweigh six anonymous ones.
+Reporting the larger count then credits the verdict with sources that argued
+against it. Mirrors `_independent_backing` in ml-service/main.py.
+*/
+function publishersBackingVerdict(result) {
+  const supporting = result.evidence?.independent_supporting || 0;
+  const contradicting = result.evidence?.independent_contradicting || 0;
+  const status = result.verification?.status || result.assessment_status;
+  if (status === "supported" || status === "reported_plan") return supporting;
+  if (status === "contradicted") return contradicting;
+  return Math.max(supporting, contradicting);
+}
+
+function describeRequestFailure(status, payload) {
+  const detail = payload?.upstream ? ` (tried ${payload.upstream})` : "";
+  if (status === 400) {
+    return payload?.error || "That input can't be checked — try rephrasing it.";
+  }
+  if (status === 504) {
+    return (
+      "The analysis service took too long to respond, so this claim wasn't checked. " +
+      "This is a problem on our side, not a finding about the claim. " +
+      "The first check of a session is slowest — try again."
+    );
+  }
+  if (status === 502 || status === 503) {
+    return (
+      "Couldn't reach the analysis service, so this claim wasn't checked. " +
+      `This is a problem on our side, not a finding about the claim${detail}.`
+    );
+  }
+  return payload?.error || `The request failed (${status}).`;
+}
+
 // ─── Hash Router ────────────────────────────────────────────────────
 /*
 PURPOSE: A custom, lightweight router using the URL hash (e.g., #/how-it-works).
@@ -234,7 +281,7 @@ function App() {
       
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Request failed (${res.status})`);
+        throw new Error(describeRequestFailure(res.status, errData));
       }
       
       const data = await res.json();
@@ -310,6 +357,8 @@ function App() {
           contradicting_count: full.evidenceSummary.contradictingCount,
           neutral_count: full.evidenceSummary.neutralCount,
           independent_groups: full.evidenceSummary.independentGroups,
+          independent_supporting: full.evidenceSummary.independentSupporting,
+          independent_contradicting: full.evidenceSummary.independentContradicting,
         },
       });
     } catch {
@@ -524,6 +573,52 @@ function App() {
                   </>
                 );
               })()}
+              {/* What was actually searched. The response has carried
+                  per-provider diagnostics all along and nothing displayed
+                  them, so a thin result was indistinguishable from a
+                  misconfigured one — the single most common reason results
+                  look wrong is a provider that never ran. Collapsed by
+                  default so it doesn't compete with the verdict. */}
+              {result.external_evidence_checked &&
+                result.retrieval?.diagnostics?.length > 0 && (
+                <details className="retrieval-details">
+                  <summary>How this was checked</summary>
+                  <ul className="retrieval-provider-list">
+                    {Object.entries(
+                      result.retrieval.diagnostics.reduce((acc, d) => {
+                        const name = d.provider || "unknown";
+                        if (!acc[name]) acc[name] = { queries: 0, results: 0, statuses: {} };
+                        acc[name].queries += 1;
+                        acc[name].results += d.normalized_result_count || 0;
+                        acc[name].statuses[d.status] = (acc[name].statuses[d.status] || 0) + 1;
+                        return acc;
+                      }, {}),
+                    ).map(([name, info]) => {
+                      // Report the least healthy outcome that provider had:
+                      // "3 of 4 queries succeeded" hides the one that didn't.
+                      const worst =
+                        ["failed", "timeout", "disabled", "no_results", "success"].find(
+                          (s) => info.statuses[s],
+                        ) || "unknown";
+                      return (
+                        <li key={name}>
+                          <span className="retrieval-provider">{name}</span>
+                          <span className={`retrieval-status ${worst}`}>{worst}</span>
+                          <span className="retrieval-count">
+                            {info.results} result{info.results === 1 ? "" : "s"} from{" "}
+                            {info.queries} quer{info.queries === 1 ? "y" : "ies"}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <p className="assessment-note">
+                    Providers marked <em>disabled</em> have no API key configured. A thin
+                    result usually means fewer providers ran, not that nothing exists.
+                  </p>
+                </details>
+              )}
+
               <ScoreBreakdown
                 mlScore={result.ml_score}
                 evidenceScore={result.evidence_score}
@@ -555,10 +650,26 @@ function App() {
 
             return (
               <div className="evidence-section" id="evidence-section">
-                {evidence.length > 0 && (
+                {evidence.length > 0 && (() => {
+                  // Independent publishers backing THIS verdict's direction,
+                  // mirroring the backend's _independent_backing. Four
+                  // reprints of one wire story are one confirmation, and this
+                  // is the only number on screen that says so.
+                  //
+                  // Taking the larger of the two sides was wrong whenever the
+                  // verdict went against the more numerous one: on a viral
+                  // false claim, six anonymous blogs "supporting" it and two
+                  // credible publishers refuting it yields a `contradicted`
+                  // verdict — and this line reported "6 independent
+                  // publishers", counting the sources the verdict rejected.
+                  const publishers = publishersBackingVerdict(result);
+                  return (
                   <>
                     <p className="section-label">
                       Evidence used — {evidence.length} source{evidence.length === 1 ? "" : "s"}
+                      {publishers > 0
+                        ? ` · ${publishers} independent publisher${publishers === 1 ? "" : "s"}`
+                        : ""}
                       {candidateCount ? ` · ${candidateCount} candidates searched` : ""}
                     </p>
                     <div className="evidence-grid">
@@ -567,7 +678,8 @@ function App() {
                       ))}
                     </div>
                   </>
-                )}
+                  );
+                })()}
 
                 {context.length > 0 && (
                   <>

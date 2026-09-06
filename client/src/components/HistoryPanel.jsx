@@ -13,6 +13,10 @@ Allows logged-in users to revisit their past fact-checks without having to run t
 expensive ML and scraping pipeline again.
 */
 
+// Shared with ScoreGauge: the same outcome must never be a word in one place
+// and a number in another.
+import { verdictStateFor } from "../verdictStates";
+
 /*
 PURPOSE: Assigns a background color based on the final score (Red for low, Green for high).
 WHY THIS EXISTS: Visual cues help users scan their history quickly.
@@ -78,9 +82,14 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
           ) : (
             /* Filled State */
             history.map((item) => {
-              const isUnverified = item.assessmentStatus === "insufficient_evidence";
-              const colors = isUnverified
-                ? { bg: "#f1f5f9", color: "#64748b" }
+              // Every outcome that isn't a measurement of evidence, not just
+              // insufficient_evidence. This was a single hardcoded comparison,
+              // so a saved check of "asdkjh asdkjh" — or of a claim nothing
+              // reports — appeared here as an amber 50, exactly as though it
+              // were a half-true claim.
+              const nonNumeric = verdictStateFor(item.assessmentStatus);
+              const colors = nonNumeric
+                ? { bg: "#f1f5f9", color: nonNumeric.color }
                 : getScoreColor(item.combinedScore);
               return (
                 <div
@@ -92,7 +101,7 @@ export default function HistoryPanel({ history, onClose, onSelect, onDelete }) {
                     className="history-score-badge"
                     style={{ background: colors.bg, color: colors.color }}
                   >
-                    {isUnverified ? "—" : item.combinedScore}
+                    {nonNumeric ? "—" : item.combinedScore}
                   </div>
                   <div className="history-item-content">
                     <div className="history-statement">{item.statement}</div>

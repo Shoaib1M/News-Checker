@@ -57,6 +57,7 @@ export default function EvidenceCard({ evidence, index }) {
     contradiction_score,
     source_tier,
     nli_available,
+    stance_note,
     publisher,
   } = evidence;
 
@@ -139,6 +140,13 @@ export default function EvidenceCard({ evidence, index }) {
           <p className="passage-label">Key passage:</p>
           <p className="passage-text">"{best_sentence}"</p>
         </div>
+      )}
+
+      {/* Why this source is not counted the way its scores read. Shown only
+          when the pipeline overrode them, so a source that reads as relevant
+          but counts as neutral does not look like a bug. */}
+      {stance_note && (
+        <p className="stance-note">This article {stance_note}.</p>
       )}
 
       {/* Explanation of why this source matters */}

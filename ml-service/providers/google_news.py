@@ -47,8 +47,37 @@ FEED_URL = (
     "?q={query}&hl=en-US&gl=US&ceid=US:en"
 )
 
-# Matches the trailing " - Publisher Name" Google appends to every RSS title.
+# Matches a trailing " - Something" in an RSS title. Google appends the
+# publisher this way — but plenty of headlines end in a dash clause of their
+# own ("Google banned in US - what it means for you"), and treating that as a
+# publisher did two things wrong: it truncated the headline, which NLI reads
+# as a passage, and it invented a publisher called "what it means for you",
+# which then counted as a distinct independent source and inflated confidence.
 _TITLE_SOURCE_SUFFIX = re.compile(r"\s+-\s+([^-]{2,40})$")
+
+# Words a headline clause starts with and a publisher name does not.
+_NOT_A_PUBLISHER_START = frozenset({
+    "what", "why", "how", "here", "when", "where", "who", "which", "this",
+    "that", "and", "but", "or", "so", "with", "after", "before", "as",
+    "everything", "all", "the latest", "live", "explained", "updates",
+})
+
+
+def _looks_like_publisher(text: str) -> bool:
+    """True when a trailing dash clause reads as a masthead, not a headline.
+
+    Publisher names are short, capitalised, and are not sentences. This is a
+    shape test, so an unusual masthead may be missed — which is the safe
+    direction: the title keeps a few extra words and the publisher falls back
+    to the link's host.
+    """
+    candidate = text.strip()
+    if not candidate or candidate[0].islower() or candidate[-1] in "?!.":
+        return False
+    words = candidate.split()
+    if not 1 <= len(words) <= 5:
+        return False
+    return words[0].lower() not in _NOT_A_PUBLISHER_START
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -78,18 +107,29 @@ def search(query: str, max_results: int = 5, timeout: int = 6) -> list[SearchRes
         if not link or not title:
             continue
 
-        # Publisher: the <source> element when present, otherwise the suffix
-        # Google appends to the title, otherwise the link's host.
+        # Publisher: the <source> element when present, otherwise a trailing
+        # dash clause that actually reads like a masthead.
         source_el = item.find("source")
-        if source_el is not None and (source_el.text or "").strip():
-            source = source_el.text.strip()
-        else:
-            match = _TITLE_SOURCE_SUFFIX.search(title)
-            source = match.group(1).strip() if match else urlparse(link).netloc
+        declared = (source_el.text or "").strip() if source_el is not None else ""
+        match = _TITLE_SOURCE_SUFFIX.search(title)
+        suffix = match.group(1).strip() if match else ""
 
-        # Drop the publisher suffix from the title so it doesn't leak into
-        # NLI passages as if it were part of the reporting.
-        title = _TITLE_SOURCE_SUFFIX.sub("", title).strip()
+        if declared:
+            source = declared
+            # Strip the suffix only when it IS the publisher. Otherwise it is
+            # part of the headline and removing it loses meaning: "Google
+            # banned in US - what it means for you" is not a story about a ban
+            # once the second half is gone.
+            strip_suffix = bool(suffix) and suffix.lower() == declared.lower()
+        elif suffix and _looks_like_publisher(suffix):
+            source = suffix
+            strip_suffix = True
+        else:
+            source = urlparse(link).netloc
+            strip_suffix = False
+
+        if strip_suffix:
+            title = _TITLE_SOURCE_SUFFIX.sub("", title).strip()
 
         results.append(SearchResult(
             url=link,

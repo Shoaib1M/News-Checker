@@ -13,6 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
+from event_vocabulary import ANTONYMS, SURFACE_TO_EVENT
 from providers import SearchResult, ProviderDiagnostic
 from providers.duckduckgo import search as ddg_search
 from providers.google_news import search as google_news_search
@@ -54,6 +55,38 @@ def _flag_enabled(name: str, default: bool = True) -> bool:
 
 
 # ── Deduplication ────────────────────────────────────────────────────
+# Words whose presence in one headline and absence in the other means the two
+# say OPPOSITE things, however similar the rest of the wording is.
+#
+# "Court rules Google must be banned in all US cities" and "Court rules Google
+# must not be banned in all US cities" share 11 of 12 tokens — 0.92 Jaccard,
+# comfortably over the near-duplicate threshold. Merging them kept whichever
+# arrived first and silently discarded the other. For a fact-checker that is
+# the worst possible thing to delete: surfacing contradictions is the job.
+_POLARITY_MARKERS = frozenset({
+    "not", "no", "never", "without", "denies", "denied", "deny", "refutes",
+    "refuted", "debunked", "false", "untrue", "rejects", "rejected",
+    "isnt", "arent", "wasnt", "werent", "doesnt", "dont", "didnt", "wont",
+    "cannot", "cant", "hasnt", "havent",
+})
+
+
+def _opposite_meanings(tokens_a: set[str], tokens_b: set[str]) -> bool:
+    """True when two near-identical headlines assert opposite things.
+
+    Checks the tokens that differ between them for polarity markers, and for
+    words belonging to opposite events in the shared vocabulary ("approves"
+    against "rejects").
+    """
+    difference = tokens_a.symmetric_difference(tokens_b)
+    if difference & _POLARITY_MARKERS:
+        return True
+
+    events_a = {SURFACE_TO_EVENT[t] for t in tokens_a if t in SURFACE_TO_EVENT}
+    events_b = {SURFACE_TO_EVENT[t] for t in tokens_b if t in SURFACE_TO_EVENT}
+    return any(ANTONYMS.get(event) in events_b for event in events_a)
+
+
 def _title_key(title: str) -> str:
     key = re.sub(r"[^a-z0-9\s]", "", title.strip().lower())
     key = re.sub(
@@ -81,6 +114,7 @@ def deduplicate(results: list[SearchResult]) -> list[SearchResult]:
         tokens = set(tk.split())
         if len(tokens) >= 6 and any(
             len(tokens & prev) / len(tokens | prev) >= 0.85
+            and not _opposite_meanings(tokens, prev)
             for prev in title_token_sets
         ):
             continue

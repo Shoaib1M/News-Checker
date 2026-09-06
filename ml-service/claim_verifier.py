@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import re
 from urllib.parse import urlparse
 
+from article_extractor import protect_abbreviations, restore_abbreviations
+
 
 # These tiers are a retrieval policy, not a declaration that a source is
 # always correct.  A high-quality source still has to entail the specific
@@ -123,24 +125,53 @@ def classify_source(url: str, source_name: str = "") -> SourceProfile:
     return SourceProfile("unclassified", 0.0)
 
 
+# A fragment shorter than this cannot be checked as a claim on its own.
+_MIN_CLAIM_WORDS = 4
+
+
 def extract_claims(text: str, max_claims: int = 6) -> list[str]:
     """Extract atomic-looking declarative claims without changing user wording.
 
-    News articles often contain lists or semicolon-separated claims.  Splitting
-    those gives each claim its own retrieval and verdict.  Very short fragments
-    are ignored because they cannot be checked meaningfully.
+    A submission may contain several independently checkable claims; splitting
+    them gives each its own retrieval and verdict.
+
+    TWO THINGS THIS MUST NOT DO, both of which it used to:
+
+    1. **Split inside an abbreviation.** "The U.S. government banned Google
+       across all cities" split after "U.", the two-word fragment "The U." was
+       discarded as too short, and the claim became "government banned Google
+       across all cities" — the subject deleted, and with it any chance of
+       retrieving the right coverage. The splitter here did not share
+       article_extractor's abbreviation handling.
+
+    2. **Discard a fragment and keep the rest.** "Apple, Google; and Microsoft
+       were all fined by regulators" split at the semicolon, dropped
+       "Apple, Google" as too short, and checked "and Microsoft were all
+       fined" — two of the three subjects silently gone. When a split
+       produces a fragment too short to stand alone, the split was wrong, so
+       the whole statement is kept instead.
     """
     normalized = re.sub(r"\s+", " ", text).strip()
     if not normalized:
         return []
 
-    candidates = re.split(r"(?:\n+|(?<=[.!?])\s+|;\s+)", normalized)
-    claims = []
-    seen = set()
+    protected = protect_abbreviations(normalized)
+    candidates = [
+        restore_abbreviations(candidate).strip(" -•\t")
+        for candidate in re.split(r"(?:\n+|(?<=[.!?])\s+|;\s+)", protected)
+    ]
+    candidates = [candidate for candidate in candidates if candidate]
+
+    # Any surviving fragment too short to be a claim means the split cut
+    # through one sentence rather than between two.
+    if any(len(candidate.split()) < _MIN_CLAIM_WORDS for candidate in candidates):
+        return [normalized]
+
+    claims: list[str] = []
+    seen: set[str] = set()
     for candidate in candidates:
-        candidate = candidate.strip(" -•\t")
         key = candidate.lower()
-        if len(candidate.split()) < 4 or key in seen:
+        if key in seen:
             continue
         seen.add(key)
         claims.append(candidate)

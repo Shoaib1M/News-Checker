@@ -21,6 +21,7 @@ SERVICE_DIR = Path(__file__).resolve().parents[1]
 if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
+import evidence_pipeline
 from evidence_pipeline import run_pipeline
 from providers import SearchResult
 import providers.registry as registry
@@ -142,3 +143,97 @@ class MultiClaimBudgetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AllProvidersHangingTests(unittest.TestCase):
+    """Every provider unreachable at once — the shape a blocked network takes.
+
+    Two properties matter here, and only one of them is about time:
+
+    1. The run stays bounded. The deadline abandons *results* on schedule, but
+       ThreadPoolExecutor's context manager waits for its threads, so the wall
+       time is bounded by the slowest single provider rather than by the
+       deadline. That is acceptable only because every provider sets its own
+       socket timeout (6-8s); this test fails if one ever stops doing so.
+
+    2. The outcome is SEARCH_FAILED, with a diagnostic per provider/query.
+       That status is what blocks absence-of-coverage reasoning — without it,
+       a network outage would be reported as "no credible source reports this".
+    """
+
+    PROVIDER_STALL_SECONDS = 3
+
+    def _hanging_search(self, query, max_results=5, **kwargs):
+        time.sleep(self.PROVIDER_STALL_SECONDS)
+        return []
+
+    def test_a_total_outage_is_bounded_and_reported_as_a_failure(self):
+        keyed = [(f"prov{i}", f"TEST_KEY_{i}", self._hanging_search) for i in range(3)]
+        keyless = [
+            ("google_news", "GOOGLE_NEWS_ENABLED", self._hanging_search, 5),
+            ("wikipedia", "WIKIPEDIA_ENABLED", self._hanging_search, 3),
+        ]
+
+        class NoNLI:
+            is_available = False
+
+            def score_many(self, claim, passages):
+                return []
+
+        started = time.monotonic()
+        with patch.object(registry, "PROVIDERS", keyed), \
+             patch.object(registry, "KEYLESS_PROVIDERS", keyless), \
+             patch.object(registry, "ddg_search", self._hanging_search), \
+             patch.dict("os.environ", {f"TEST_KEY_{i}": "x" for i in range(3)}), \
+             patch.object(evidence_pipeline, "get_nli_service", lambda: NoNLI()):
+            outcome = run_pipeline(
+                "The prime minister of India resigned this morning",
+                deadline=time.monotonic() + 45,
+            )
+        elapsed = time.monotonic() - started
+
+        self.assertLess(
+            elapsed, 30,
+            "a total outage must stay bounded by provider socket timeouts, "
+            "not run to the pipeline deadline",
+        )
+        self.assertEqual(outcome.retrieval_status, "SEARCH_FAILED")
+        self.assertEqual(outcome.candidate_count, 0)
+
+    def test_every_provider_and_query_leaves_a_diagnostic(self):
+        """A silent provider is the hardest failure to diagnose from outside."""
+        keyed = [(f"prov{i}", f"TEST_KEY_{i}", self._hanging_search) for i in range(3)]
+        keyless = [
+            ("google_news", "GOOGLE_NEWS_ENABLED", self._hanging_search, 5),
+            ("wikipedia", "WIKIPEDIA_ENABLED", self._hanging_search, 3),
+        ]
+
+        class NoNLI:
+            is_available = False
+
+            def score_many(self, claim, passages):
+                return []
+
+        with patch.object(registry, "PROVIDERS", keyed), \
+             patch.object(registry, "KEYLESS_PROVIDERS", keyless), \
+             patch.object(registry, "ddg_search", self._hanging_search), \
+             patch.dict("os.environ", {f"TEST_KEY_{i}": "x" for i in range(3)}), \
+             patch.object(evidence_pipeline, "get_nli_service", lambda: NoNLI()):
+            outcome = run_pipeline(
+                "The prime minister of India resigned this morning",
+                deadline=time.monotonic() + 45,
+            )
+
+        # 4 queries x 6 providers, each leaving a record of what it did.
+        self.assertEqual(len(outcome.diagnostics), 24)
+        # A provider that answers *empty* inside the budget is "no_results",
+        # not "timeout" — but either way none of them succeeded, which is what
+        # makes the overall status SEARCH_FAILED and blocks absence reasoning.
+        self.assertTrue(
+            all(d["status"] != "success" for d in outcome.diagnostics),
+            f"unexpected success among {[d['status'] for d in outcome.diagnostics]}",
+        )
+        self.assertTrue(
+            all(d["provider"] for d in outcome.diagnostics),
+            "every diagnostic must name the provider it came from",
+        )

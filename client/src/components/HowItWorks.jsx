@@ -19,6 +19,7 @@ import { useState } from "react";
 import {
   Package,
   FileText,
+  Filter,
   Brain,
   CheckCircle2,
   Globe,
@@ -30,6 +31,26 @@ import {
 
 // Final architecture for the end-to-end fact-checking pipeline.
 const PIPELINE_STEPS = [
+  {
+id: "reading-the-submission",
+icon: <Package className="hiw-step-icon" />,
+title: "Reading the submission",
+short: "Find the proposition inside what was actually pasted",
+detail: `People don't submit propositions. They submit what they saw, with the framing they saw it in: "is it true that…?", a headline in quotes with "- Reuters, March 2024" after it, a pasted link in front of the sentence, emoji and hashtags around it.
+
+Every stage after this one reads the claim — including the entailment model, which uses it as its hypothesis — so that packaging used to reach all of them. A link made the site it pointed at into one of the claim's entities; a source credit did the same for the publisher's name; and "is it true that the prime minister of India resigned?" was classified as not a claim and never searched at all.
+
+We strip the packaging and keep the proposition. What the claim asserts is never touched: negation, hedges and quantifiers all change the meaning, so "did not", "may", "all" and "only" survive exactly as written, and you always see your own words back rather than our cleaned-up version.`,
+  },
+  {
+id: "claim-triage",
+icon: <Filter className="hiw-step-icon" />,
+title: "Claim triage",
+short: "Decide what kind of question the claim even poses",
+detail: `Before any searching, we work out whether there is something here that evidence could settle. An open question, an unparseable string, or a value judgment is reported as such and never searched — telling someone "we couldn't verify this" when there was no proposition to verify is misleading. ("Why did the prime minister resign?" is a real question and is refused; "is it true that the prime minister resigned?" is a claim in a question's clothing, and is checked.)
+
+A claim about a future event is marked as such: nothing can make it true or false today, so the most that can be established is whether it has been announced. We also judge whether a true version of the claim would necessarily have been reported, which is what later licenses treating an absence of coverage as meaningful.`,
+  },
   {
 id: "claim-understanding",
 icon: <Package className="hiw-step-icon" />,
@@ -62,9 +83,11 @@ id: "relevance",
 icon: <Target className="hiw-step-icon" />,
 title: "Relevance filtering",
 short: "Reject weak or unrelated matches",
-detail: `Candidates are scored by entity match, action compatibility, temporal fit, and proposition relevance. We deliberately keep a broad first pass and then apply a stricter relevance filter to avoid both extremes: too many low-quality hits and too few relevant sources.
+detail: `Candidates are scored by entity match, action match, predicate overlap, coherence, and keyword specificity. Action match is what separates an article about the right subjects from one about the right event: for the claim "the US is going to ban Google", a story headlined "Google expands advertising tools in the United States" mentions both entities and reports nothing about a ban.
 
-The goal is to keep the evidence related to the same event or proposition while excluding generic topical articles that merely mention the same names or numbers.`,
+Matching accepts the claim's action or its opposite, because a source that refutes a claim describes the opposite outcome in its own words and would otherwise be filtered out before it could be read.
+
+The thresholds are measured against a labelled set rather than chosen by feel, and are deliberately tuned for recall: a rejected document is gone for good, while one that passes still has to be classified before it counts as evidence.`,
   },
   {
 id: "nli",
@@ -80,9 +103,11 @@ id: "evidence-fusion",
 icon: <CheckCircle2 className="hiw-step-icon" />,
 title: "Source quality + evidence fusion",
 short: "Weight direct, independent, recent reporting more heavily",
-detail: `The final verdict balances directness, relevance, source quality, source independence, recency, contradiction strength, and NLI confidence. Independent high-quality evidence is valued more than duplicate wire copies or weak contextual articles.
+detail: `The verdict weighs each source by tier — primary, fact-check, reporting, reference — and counts distinct publishers rather than articles, so several copies of one wire story are one confirmation and not several.
 
-Strong contradictory evidence can outweigh a weak supporting article, and the system abstains when the evidence is simply not strong enough.`,
+Each direction is scored only over the sources that take it, so background coverage that says nothing either way cannot dilute a real signal. A direction has to clearly outweigh the other to win outright; otherwise the evidence is genuinely contested and we say so.
+
+Where a search ran properly across several providers and found nothing supporting a claim that would certainly have been reported, we report that as a finding — "no credible source reports this" — rather than as a failure to check. That is deliberately narrow: it never applies to a negated claim, a thin candidate pool, a failed search, or an unavailable NLI model, because those tell us nothing about the world.`,
   },
 ];
 
@@ -226,7 +251,11 @@ export default function HowItWorks() {
               style={{ background: "var(--green)" }}
             />
             <span>
-              <strong>Source quality</strong> — independence, recency, and reliability of the source
+              {/* Not "recency": the pipeline does not compare an article's
+                  publish date against the claim's timeframe. The README
+                  lists that as a known gap, and this page claiming it was a
+                  direct contradiction anyone could catch. */}
+              <strong>Source quality</strong> — independence and tier of the publisher
             </span>
           </div>
         </div>

@@ -141,6 +141,70 @@ _COPULA = re.compile(
     re.IGNORECASE,
 )
 
+# ── Language scope ───────────────────────────────────────────────────
+# Every stage of this pipeline is English-only: the NLI model, the event
+# vocabulary, the abbreviation and demonym tables, and the providers, which
+# are queried with lang=en. A Hindi or Spanish claim therefore cannot be
+# checked — but it used to be reported as "no verifiable claim found", which
+# tells the user their claim was unintelligible rather than out of scope.
+# Those are very different messages to receive.
+_NON_LATIN_LETTER = re.compile(
+    r"[\u0370-\u03ff\u0400-\u04ff\u0530-\u058f\u0590-\u05ff"
+    r"\u0600-\u06ff\u0700-\u074f\u0900-\u097f\u0980-\u09ff"
+    r"\u0a00-\u0d7f\u0e00-\u0e7f\u1000-\u109f\u3040-\u30ff"
+    r"\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]"
+)
+
+# Function words that are distinctly English. Words that double as function
+# words elsewhere are deliberately absent — "a" is a French verb form, "in"
+# and "on" are German and Dutch, "no" is Spanish — because a false English
+# marker is what lets a foreign claim through to be reported as gibberish.
+_ENGLISH_MARKERS = frozenset({
+    "the", "is", "are", "was", "were", "of", "to", "and", "for", "with",
+    "that", "has", "have", "had", "will", "from", "this", "these", "been",
+    "after", "before", "about", "than", "which", "would", "could", "should",
+})
+
+# Function words common in other Latin-script languages and rare in English.
+# Short words that collide with English are deliberately absent: Portuguese
+# "as" and "os", Spanish "no" and "se", Italian "lo". Leaving "as" in flagged
+# "Angela Merkel resigned as chancellor" as foreign.
+_FOREIGN_MARKERS = frozenset({
+    "el", "la", "los", "las", "una", "del", "que", "por", "para", "con",
+    "esta", "este", "muy", "pero", "sus",
+    "le", "les", "des", "du", "et", "est", "sont", "dans", "pour", "sur",
+    "ce", "cette", "qui", "avec", "mais", "leur", "aux", "nous", "vous",
+    "ils", "elle", "cela",
+    "der", "die", "das", "den", "dem", "und", "ist", "sind", "eine",
+    "nicht", "auch", "wird", "heute", "sich",
+    "gli", "che", "non", "sono", "nel", "alla",
+    "uma", "nao", "com", "pelo", "seu",
+})
+
+# Two independent foreign markers, not one. A single hit is too easy to score
+# on a proper noun or a borrowed word.
+_MIN_FOREIGN_MARKERS = 2
+
+
+def _language_looks_english(text: str, tokens: list[str]) -> bool:
+    """Heuristic scope check — is this English enough to attempt?
+
+    Deliberately permissive: it reports "not English" only when the evidence
+    is clear, because refusing a real English claim is worse than attempting a
+    borderline one.
+    """
+    letters = [ch for ch in text if ch.isalpha()]
+    if letters:
+        non_latin = sum(1 for ch in letters if _NON_LATIN_LETTER.match(ch))
+        if non_latin / len(letters) > 0.3:
+            return False
+
+    lowered = {token.lower() for token in tokens}
+    if lowered & _ENGLISH_MARKERS:
+        return True
+    return len(lowered & _FOREIGN_MARKERS) < _MIN_FOREIGN_MARKERS
+
+
 _VERB_SHAPED = re.compile(r"\w+(?:s|ed|ing)$", re.IGNORECASE)
 
 # The -s/-ed/-ing shape test misses every irregular past tense, so "The
@@ -213,6 +277,21 @@ def triage_claim(statement: str) -> ClaimTriage:
             reason=(
                 "This is a question, not a claim. Enter it as a statement "
                 "(\"X did Y\") and it can be checked against evidence."
+            ),
+        )
+
+    # Checked before the length test: a Devanagari or Arabic claim produces
+    # zero ASCII tokens, and would otherwise be rejected as "too short".
+    if not _language_looks_english(text, tokens):
+        return ClaimTriage(
+            kind="not_a_claim",
+            claim_type="unsupported language",
+            search_worthwhile=False,
+            salience="normal",
+            reason=(
+                "This checker only handles English. The claim itself may well "
+                "be checkable — the language is the limitation here, not the "
+                "claim. Try submitting it in English."
             ),
         )
 

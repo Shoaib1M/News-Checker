@@ -41,6 +41,7 @@ from binary_truth_mlp import (
     load_artifacts,
     make_prediction_features,
 )
+from claim_normalizer import normalize_claim
 from claim_triage import triage_claim
 from claim_verifier import extract_claims
 from evidence_aggregator import assess_coverage, count_independent_groups
@@ -90,6 +91,29 @@ _train_max_values = None
 # (ML_SERVICE_TIMEOUT_MS) so a slow provider surfaces as partial evidence
 # with honest diagnostics rather than a dead request.
 EVIDENCE_BUDGET_SECONDS = float(os.getenv("EVIDENCE_BUDGET_SECONDS", "45"))
+
+# Retrieval outcomes ordered worst to best. A multi-claim statement takes the
+# WORST status across its claims, because the status gates absence-of-coverage
+# reasoning: reporting "no credible source reports this" on the strength of
+# one claim's successful search, while another claim's search failed, asserts
+# something about the world that was never checked.
+#
+# Previously the loop simply overwrote the status each iteration, so a
+# three-claim statement reported whatever happened to the last claim.
+_RETRIEVAL_SEVERITY = {
+    "SEARCH_FAILED": 0,
+    "NO_RESULTS": 1,
+    "NO_RELEVANT_RESULTS": 2,
+    "SEARCH_PARTIAL": 3,
+    "SEARCH_SUCCESS": 4,
+}
+
+
+def _worst_retrieval_status(statuses: list[str]) -> str:
+    """The most pessimistic retrieval outcome among several claims."""
+    if not statuses:
+        return "NO_RESULTS"
+    return min(statuses, key=lambda s: _RETRIEVAL_SEVERITY.get(s, 0))
 
 
 """
@@ -214,7 +238,14 @@ class EvidenceSummary(BaseModel):
     supporting_count: int = 0
     contradicting_count: int = 0
     neutral_count: int = 0
+    # Distinct publishers across *all* classified evidence — a measure of how
+    # broadly the search actually reached.
     independent_groups: int = 0
+    # Distinct publishers on each side. These are what back a verdict: four
+    # copies of one wire story are one confirmation, and only these counts
+    # can tell you that.
+    independent_supporting: int = 0
+    independent_contradicting: int = 0
 
 
 class VerificationInfo(BaseModel):
@@ -241,6 +272,10 @@ class EvidenceItem(BaseModel):
     contradiction_score: float
     source_tier: str = "unclassified"
     nli_available: bool = False
+    # Set when the pipeline overrode what the NLI scores implied — currently
+    # only when the article states a different figure from the claim's. Empty
+    # for every source whose stance came straight from the scores.
+    stance_note: str = ""
     # Who actually published this, resolved from the aggregator link where
     # needed. The UI shows this rather than the raw URL host, which for a
     # Google News link would read "news.google.com" for every source.
@@ -310,6 +345,11 @@ _STATUS_VERDICTS: dict[str, str] = {
 NON_NUMERIC_STATUSES = frozenset({
     "insufficient_evidence", "not_a_claim", "not_objectively_verifiable",
     "not_verifiable_yet", "unsupported_no_coverage",
+    # reported_plan too: the dial reads "evidence balance" for the claim, and
+    # a claim about a future event has none. The evidence measures how well
+    # the *announcement* is attested, so showing 90 beside "reported as
+    # planned — not yet done" invites reading it as 90% true.
+    "reported_plan",
 })
 
 
@@ -377,21 +417,37 @@ def merge_claim_summaries(summaries: list[dict]) -> dict:
         "supporting_count": sum(s.get("supporting_count", 0) for s in summaries),
         "contradicting_count": sum(s.get("contradicting_count", 0) for s in summaries),
         "neutral_count": sum(s.get("neutral_count", 0) for s in summaries),
+        # Weakest link, not the sum: a multi-claim statement is only as well
+        # sourced as its least-supported claim, and summing across claims
+        # would also double-count a publisher that covered several of them.
+        "independent_supporting": min(
+            (s.get("independent_supporting", 0) for s in assessed), default=0
+        ),
+        "independent_contradicting": min(
+            (s.get("independent_contradicting", 0) for s in assessed), default=0
+        ),
     }
 
 
 def _compute_confidence(
     status: str,
-    evidence_count: int,
+    independent_sources: int,
     nli_available: bool,
     candidate_count: int = 0,
 ) -> str:
     """Categorical confidence — avoids fake-precision percentages.
 
-    For ``unsupported_no_coverage`` the confidence comes from how much of the
-    press we actually looked at, not from how many sources were classified:
-    the finding *is* that nothing was classified as supporting. A wide search
-    that came back empty is a stronger negative than a narrow one.
+    Scaled by the number of *independent publishers* backing the verdict, not
+    by how many articles were classified. Those differ exactly when it
+    matters: a wire story carried by four outlets under one masthead used to
+    read as four confirmations and earn "high" confidence. One story is one
+    confirmation however many times it is reprinted.
+
+    For ``unsupported_no_coverage`` the confidence instead comes from how much
+    of the press we actually looked at — the finding *is* that nothing was
+    classified as supporting, so counting supporting sources would be
+    circular. A wide search that came back empty is a stronger negative than
+    a narrow one.
     """
     if status in {"not_a_claim", "not_objectively_verifiable"}:
         return "high"  # nothing uncertain about "there is no claim here"
@@ -403,9 +459,9 @@ def _compute_confidence(
         return "low"
     if not nli_available:
         return "low"
-    if evidence_count >= 3:
+    if independent_sources >= 3:
         return "high"
-    if evidence_count >= 2:
+    if independent_sources >= 2:
         return "medium"
     return "low"
 
@@ -496,10 +552,12 @@ def _build_reasoning(
             "supported": "support", "contradicted": "contradict",
             "mixed": "point both ways on",
         }[status]
+        # Count the sources that take the verdict's direction, not every
+        # classified source: saying "5 sources support this claim" when three
+        # of the five were neutral is the same overstatement the Related
+        # coverage split exists to prevent.
         return (
-            f"{scope} {classified_count} classified source"
-            f"{'' if classified_count == 1 else 's'}{independence} {direction} "
-            "this claim."
+            f"{scope} Sources{independence} {direction} this claim."
         )
 
     if relevant_count == 0 and candidate_count:
@@ -513,6 +571,37 @@ def _build_reasoning(
         f"{scope} Nothing retrieved was strong enough to support or contradict "
         "this claim, so no verdict is given."
     )
+
+
+def _providers_answered(diagnostics: list[dict]) -> int:
+    """Distinct providers whose query completed, whether or not it found anything.
+
+    This is what makes silence mean something. A provider reporting
+    `no_results` looked and found nothing; a provider reporting `failed` is
+    blind, and counting it would turn an outage into a finding about the
+    world. Counted per provider rather than per query, because the same
+    provider answering four queries is still one view of the press.
+    """
+    return len({
+        diagnostic.get("provider")
+        for diagnostic in diagnostics or []
+        if diagnostic.get("status") in {"success", "no_results"}
+    })
+
+
+def _independent_backing(stance: dict) -> int:
+    """Distinct publishers backing the verdict's direction.
+
+    For a mixed verdict both sides matter, so take the larger; for a
+    directional one only that side counts toward confidence.
+    """
+    supporting = stance.get("independent_supporting", 0)
+    contradicting = stance.get("independent_contradicting", 0)
+    if stance.get("status") == "contradicted":
+        return contradicting
+    if stance.get("status") == "supported":
+        return supporting
+    return max(supporting, contradicting)
 
 
 def _count_evidence_by_stance(evidence_list: list) -> dict:
@@ -598,7 +687,22 @@ def check_statement(request: CheckRequest):
         raise HTTPException(status_code=503, detail="Model not loaded yet.")
 
     start = time.time()
-    statement = request.statement.strip()
+    submitted = request.statement.strip()
+
+    # --- 0. Normalise the submission into the proposition it contains ---
+    # People submit what they saw, with the framing they saw it in: "is it
+    # true that X?", "BREAKING: X!!!", a pasted URL in front of X, a headline
+    # in quotes with "- Reuters, March 2024" after it. Every stage below reads
+    # the claim — triage, entity extraction, query generation, and NLI, which
+    # uses it as the hypothesis — so the packaging reached all of them. "Is it
+    # true that the prime minister of India resigned?" was triaged as
+    # `not_a_claim` and never searched: the most natural way to ask a
+    # fact-checker a question, answered with "no verifiable claim found".
+    #
+    # `submitted` stays the user's own words. It is what the response echoes,
+    # what the UI shows and what history stores; only the machinery sees the
+    # normalised form.
+    statement = normalize_claim(submitted)
 
     # --- 1. ML Prediction Phase ---
     # Convert text into a numerical array (TF-IDF features)
@@ -655,6 +759,7 @@ def check_statement(request: CheckRequest):
         # One budget shared across every claim, so a multi-claim statement
         # can't multiply the worst case by the number of claims.
         pipeline_deadline = time.monotonic() + EVIDENCE_BUDGET_SECONDS
+        claim_statuses: list[str] = []
         try:
             for claim in claims:
                 outcome = run_pipeline(
@@ -663,8 +768,12 @@ def check_statement(request: CheckRequest):
                 )
                 claim_summaries.append((claim, outcome.stance))
                 all_evidence.extend(outcome.evidence)
-                retrieval_status = outcome.retrieval_status
-                retrieval_diagnostics = outcome.diagnostics
+                # Accumulate, never overwrite: the status gates absence
+                # reasoning for the whole statement, and the diagnostics are
+                # how a thin result is traced back to a provider.
+                claim_statuses.append(outcome.retrieval_status)
+                retrieval_diagnostics.extend(outcome.diagnostics)
+                retrieval_status = _worst_retrieval_status(claim_statuses)
                 candidate_count += outcome.candidate_count
                 relevant_count += outcome.relevant_count
         except Exception as err:
@@ -701,6 +810,7 @@ def check_statement(request: CheckRequest):
             retrieval_status=retrieval_status,
             candidate_count=candidate_count,
             salience=triage.salience,
+            providers_answered=_providers_answered(retrieval_diagnostics),
             prospective=triage.is_prospective,
             nli_ready=nli_svc.is_available,
             negated=triage.negated,
@@ -750,6 +860,7 @@ def check_statement(request: CheckRequest):
             contradiction_score=round(result.contradiction_score, 3),
             source_tier=result.source_tier,
             nli_available=result.nli_available,
+            stance_note=getattr(result, "stance_note", "") or "",
             publisher=result.publisher or "",
         ))
         if len(top_evidence) == 8:
@@ -763,7 +874,7 @@ def check_statement(request: CheckRequest):
         knowledge_assessment["confidence"] if knowledge_assessment
         else _compute_confidence(
             ev_stance["status"],
-            ev_stance.get("evidence_count", 0),
+            _independent_backing(ev_stance),
             ev_stance.get("nli_available", False),
             candidate_count=candidate_count,
         )
@@ -778,7 +889,7 @@ def check_statement(request: CheckRequest):
             candidate_count=candidate_count,
             relevant_count=relevant_count,
             classified_count=nli_classified,
-            independent_groups=count_independent_groups(all_evidence),
+            independent_groups=_independent_backing(ev_stance),
             retrieval_status=retrieval_status,
             nli_status=nli_svc.status["status"],
         )
@@ -788,7 +899,7 @@ def check_statement(request: CheckRequest):
 
     # --- 5. Build response ---
     return CheckResponse(
-        statement=statement,
+        statement=submitted,
         claim_type=(
             knowledge_assessment["claim_type"] if knowledge_assessment
             else triage.claim_type
@@ -825,6 +936,8 @@ def check_statement(request: CheckRequest):
             contradicting_count=evidence_counts["contradicting"],
             neutral_count=evidence_counts["neutral"],
             independent_groups=count_independent_groups(all_evidence),
+            independent_supporting=ev_stance.get("independent_supporting", 0),
+            independent_contradicting=ev_stance.get("independent_contradicting", 0),
         ),
 
         # Legacy fields for backward compatibility

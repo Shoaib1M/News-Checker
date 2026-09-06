@@ -60,6 +60,11 @@ GOOGLE_NEWS_RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
   <link>https://news.google.com/rss/articles/QW5hbHlzaXM?oc=5</link>
   <description>What the resignation means.</description>
 </item>
+<item>
+  <title>Google banned in US - what it means for you</title>
+  <link>https://news.google.com/rss/articles/V2hhdEl0TWVhbnM?oc=5</link>
+  <description>The consequences explained.</description>
+</item>
 </channel></rss>"""
 
 WIKIPEDIA_JSON = json.dumps({
@@ -82,7 +87,7 @@ class TestGoogleNewsParsing(unittest.TestCase):
 
     def test_parses_every_item(self):
         results = self._search()
-        self.assertEqual(len(results), 3)
+        self.assertEqual(len(results), 4)
         self.assertTrue(all(r.provider == "google_news" for r in results))
 
     def test_publisher_suffix_is_stripped_from_the_title(self):
@@ -107,6 +112,23 @@ class TestGoogleNewsParsing(unittest.TestCase):
 
     def test_max_results_is_respected(self):
         self.assertEqual(len(self._search(max_results=2)), 2)
+
+    def test_a_headline_clause_is_not_mistaken_for_a_publisher(self):
+        """"- what it means for you" is part of the headline, not a masthead.
+
+        Treating it as one truncated the headline — which NLI reads as a
+        passage — and invented a publisher called "what it means for you",
+        which then counted as a distinct independent source and inflated
+        confidence in the verdict.
+        """
+        result = self._search()[3]
+        self.assertEqual(result.title, "Google banned in US - what it means for you")
+        self.assertNotIn("what it means", result.source)
+
+    def test_a_declared_source_wins_over_a_dash_clause(self):
+        """The <source> element is authoritative when Google provides it."""
+        results = self._search()
+        self.assertEqual(results[0].source, "Reuters")
 
     def test_network_failure_propagates(self):
         """The registry must record a diagnostic, not read silence as an empty press."""

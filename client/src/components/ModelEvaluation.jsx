@@ -114,7 +114,11 @@ export default function ModelEvaluation() {
             onClick={() => setSelectedModel(key)}
           >
             {m.name}
-            {m.is_production && <span className="eval-prod-badge">IN USE</span>}
+            {/* Not "IN USE": this model ships, but as an advisory prior that
+                the verdict never reads. Badging it "IN USE" next to a 56.9%
+                accuracy invites the reading that the fact-checker is 57%
+                accurate — and contradicts what every other screen says. */}
+            {m.is_production && <span className="eval-prod-badge">SHIPPED AS PRIOR</span>}
           </button>
         ))}
       </div>
@@ -126,6 +130,11 @@ export default function ModelEvaluation() {
         <MetricCard label="Recall" value={model.recall} color="var(--green)" />
         <MetricCard label="F1 Score" value={model.f1} color="var(--amber)" />
       </div>
+
+      {/* Accuracy against the baseline anyone would compute themselves.
+          Stating this is the whole reason the architecture is evidence-first,
+          and leaving the reader to discover it is worse than owning it. */}
+      <BaselineComparison dataset={dataset} model={model} />
 
       {/* Confusion Matrix + ROC side by side */}
       <div className="eval-charts-row">
@@ -229,6 +238,56 @@ export default function ModelEvaluation() {
 
 
 // ─── Sub-components ──────────────────────────────────────────────────
+
+/*
+PURPOSE: Put an accuracy number next to the score you would get by guessing.
+
+WHY THIS EXISTS:
+An accuracy figure means nothing without the majority-class baseline beside
+it. On this test set 56.4% of examples fall in the larger binary class, so a
+model that always answered "true" would score 56.4%. Reporting 56.9% without
+that comparison invites the reader to think the model works — and reporting it
+on a fact-checking site invites them to think the SYSTEM is 57% accurate.
+
+It is neither. That is precisely why the verdict pipeline is evidence-based
+and does not read this model's output at all. Saying so plainly is a stronger
+position than letting a reader compute the baseline themselves and wonder
+whether anyone noticed.
+*/
+function BaselineComparison({ dataset, model }) {
+  const distribution = dataset.label_distribution || {};
+  const falseish = ["pants-fire", "false", "barely-true"]
+    .reduce((sum, label) => sum + (distribution[label] || 0), 0);
+  const trueish = dataset.test_size - falseish;
+  const baseline = Math.max(falseish, trueish) / dataset.test_size;
+
+  // Only meaningful for the binary task; the 6-class model has its own baseline.
+  if (!model.is_production || !dataset.test_size) return null;
+
+  const delta = (model.accuracy - baseline) * 100;
+  const beatsBaseline = delta > 0;
+
+  return (
+    <div className="eval-baseline-card" id="baseline-comparison">
+      <div className="eval-baseline-row">
+        <span className="eval-baseline-label">Model accuracy</span>
+        <span className="eval-baseline-value">{(model.accuracy * 100).toFixed(1)}%</span>
+      </div>
+      <div className="eval-baseline-row">
+        <span className="eval-baseline-label">
+          Always guessing the larger class
+        </span>
+        <span className="eval-baseline-value">{(baseline * 100).toFixed(1)}%</span>
+      </div>
+      <p className="eval-baseline-note">
+        A difference of <strong>{beatsBaseline ? "+" : ""}{delta.toFixed(1)} points</strong>.
+        On text alone, without evidence, telling true claims from false ones is
+        close to a coin flip — which is exactly why the verdict is computed from
+        retrieved evidence and never reads this model&apos;s output.
+      </p>
+    </div>
+  );
+}
 
 /*
 PURPOSE: Draws a small circular progress bar for individual metrics (Accuracy, F1, etc).

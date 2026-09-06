@@ -14,7 +14,10 @@ USED BY:
 */
 
 import { Router } from "express";
-import fetch from "node-fetch"; // Node doesn't have a built-in fetch (until recently), so we use this package
+// fetch is built into Node 18+, so there is no package to import. Using the
+// global also makes this route testable: an imported binding cannot be
+// stubbed, which is why the test asserting "no upstream request for invalid
+// input" was passing without ever checking anything.
 import Check from "../models/Check.js";
 import { optionalAuth } from "../middleware/auth.js";
 
@@ -38,6 +41,10 @@ const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 // once the model is warm in memory.
 const ML_SERVICE_TIMEOUT_MS = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 180_000;
 
+// Mirrors CheckRequest.max_length in ml-service/main.py. Kept in sync by hand;
+// if they drift, the looser side simply produces a worse error message.
+const MAX_STATEMENT_LENGTH = 2000;
+
 /*
 PURPOSE:
 Process a fact-check request.
@@ -57,10 +64,23 @@ router.post("/", optionalAuth, async (req, res) => {
   try {
     const { statement } = req.body;
 
-    // Step 1: Basic validation
-    // Ensure the statement is a valid string and at least 5 characters long
-    if (!statement || typeof statement !== "string" || statement.trim().length < 5) {
+    // Step 1: Basic validation.
+    // Both bounds must match ml-service's CheckRequest (min_length=5,
+    // max_length=2000). Without the upper bound, an over-long statement was
+    // forwarded, rejected by Pydantic with a 422, and relayed to the user as
+    // a 502 "ML service error" carrying a raw validation payload — a broken
+    // backend, apparently, rather than "your text is too long".
+    if (!statement || typeof statement !== "string") {
+      return res.status(400).json({ error: "Statement must be text." });
+    }
+    const trimmed = statement.trim();
+    if (trimmed.length < 5) {
       return res.status(400).json({ error: "Statement must be at least 5 characters." });
+    }
+    if (trimmed.length > MAX_STATEMENT_LENGTH) {
+      return res.status(400).json({
+        error: `Statement must be at most ${MAX_STATEMENT_LENGTH} characters.`,
+      });
     }
 
     // Step 2: Forward the request to the Python FastAPI service
@@ -75,7 +95,7 @@ router.post("/", optionalAuth, async (req, res) => {
       mlResponse = await fetch(`${FASTAPI_URL}/api/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ statement: statement.trim() }),
+        body: JSON.stringify({ statement: trimmed }),
         signal: controller.signal,
       });
     } catch (fetchError) {
@@ -177,6 +197,8 @@ router.post("/", optionalAuth, async (req, res) => {
             contradictingCount: result.evidence.contradicting_count,
             neutralCount: result.evidence.neutral_count,
             independentGroups: result.evidence.independent_groups,
+            independentSupporting: result.evidence.independent_supporting,
+            independentContradicting: result.evidence.independent_contradicting,
           },
         });
       } catch (dbError) {
