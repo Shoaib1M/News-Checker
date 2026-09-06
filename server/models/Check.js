@@ -37,6 +37,7 @@ const evidenceItemSchema = new mongoose.Schema(
     publisher: String,           // Who actually published it, resolved from aggregator links
     source_tier: String,         // primary, fact-check, reporting, or unclassified
     nli_available: Boolean,      // Whether the stance came from the NLI model
+    stance_note: String,         // Why the stance differs from what the NLI scores implied
   },
   // _id: false tells Mongoose NOT to create a unique ID for every single piece of evidence.
   // We only need an ID for the parent Check document.

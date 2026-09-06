@@ -715,3 +715,38 @@ reported as `SEARCH_FAILED` so absence reasoning stays blocked.
 
 **Not verified:** live reachability of any provider. The sandbox proxy blocks
 them, so only the parsers are tested, against real payload shapes.
+
+### Bug 23 — a different figure counted as confirming the claim
+
+`evidence_pipeline.py`, `numeric_consistency.py` (new)
+
+"The vaccine is 95% effective" and "the vaccine is 62% effective" differ by two
+digits. Every relevance signal in the pipeline is built on word overlap, so all
+of them fire; and a sentence that close to the claim is exactly what a textual
+entailment model scores as entailment. Nothing compared the numbers.
+
+Reproduced through the real pipeline: three independent publishers — Reuters,
+AP, the BBC — all reporting **62%**, against a claim of **95%**, returned
+`supported`. Removing the guard makes those tests fail again, which is how the
+reproduction is kept honest.
+
+The guard is deterministic and does not depend on the NLI model. A conflict
+requires all three of: the claim asserts a quantity, no passage states it, and
+some passage states a different one **of the same kind describing the same
+attribute**. The third condition is what keeps it off claims where the number
+is incidental — "Musk bought the Eiffel Tower for 3 trillion dollars" against
+an article mentioning a 400 billion net worth is not a conflict, and an article
+confirming the purchase is not discarded over the price.
+
+A conflict only ever *withdraws* support; it never creates a contradiction.
+Two figures can differ because they measure different things ("62% against
+severe disease" does not refute "95% overall"), and this cannot tell those
+apart. The honest reading is "about the claim, but does not state its figure".
+
+Years are deliberately inert: any two years in the same era are within the 2%
+tolerance, so "by 2050" against "by 2035" never registers. A date needs
+comparing against a timeline, not string matching.
+
+The evidence card now says *"This article states 62% where the claim says
+95%"*, so a source that reads as relevant but counts as neutral does not look
+like a bug.

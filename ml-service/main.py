@@ -271,6 +271,10 @@ class EvidenceItem(BaseModel):
     contradiction_score: float
     source_tier: str = "unclassified"
     nli_available: bool = False
+    # Set when the pipeline overrode what the NLI scores implied — currently
+    # only when the article states a different figure from the claim's. Empty
+    # for every source whose stance came straight from the scores.
+    stance_note: str = ""
     # Who actually published this, resolved from the aggregator link where
     # needed. The UI shows this rather than the raw URL host, which for a
     # Google News link would read "news.google.com" for every source.
@@ -823,6 +827,7 @@ def check_statement(request: CheckRequest):
             contradiction_score=round(result.contradiction_score, 3),
             source_tier=result.source_tier,
             nli_available=result.nli_available,
+            stance_note=getattr(result, "stance_note", "") or "",
             publisher=result.publisher or "",
         ))
         if len(top_evidence) == 8:

@@ -806,6 +806,16 @@
   margin: 0;
 }
 
+/* Why a source's stance was overridden — same weight as the passage text,
+   marked with the amber used elsewhere for "treat this with care". */
+.stance-note {
+  font-size: 0.75rem;
+  color: var(--gray-600);
+  margin: 0 0 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid #f59e0b;
+}
+
 /* Explanation of source importance */
 .evidence-explanation {
   padding: 0.4rem 0;

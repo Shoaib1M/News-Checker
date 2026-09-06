@@ -25,6 +25,7 @@ from article_extractor import extract_article, extract_passages
 from claim_verifier import classify_source, resolve_publisher_host
 from evidence_aggregator import ClassifiedEvidence, compute_stance
 from nli_service import get_nli_service
+from numeric_consistency import conflicting_quantity
 from providers import SearchResult
 from providers.registry import search_all_providers
 from query_generator import QueryGenerator
@@ -48,6 +49,9 @@ class EvidenceResult:
     source_tier: str = "unclassified"
     source_weight: float = 0.0
     nli_available: bool = False
+    # Why the stance is not what the NLI scores alone would imply. Empty
+    # whenever the scores were taken at face value.
+    stance_note: str = ""
     # Host of whoever actually published the article. Differs from the URL's
     # host for aggregator links (Google News), and it is this value — not the
     # link — that decides source tier and counts independent groups.
@@ -360,6 +364,20 @@ def run_pipeline(
         else:
             stance = "unclear"
 
+        # A document that states a DIFFERENT figure cannot be the source that
+        # confirms the claim's, however strongly it entails on wording. This
+        # only withdraws support — see numeric_consistency for why it never
+        # converts one into a contradiction.
+        stance_note = ""
+        if stance == "supports":
+            conflict = conflicting_quantity(claim, passages)
+            if conflict:
+                claimed, stated = conflict
+                stance = "unclear"
+                stance_note = (
+                    f"states {stated.text} where the claim says {claimed.text}"
+                )
+
         evidence_results.append(EvidenceResult(
             url=url,
             title=title,
@@ -376,6 +394,7 @@ def run_pipeline(
             source_weight=source_profile.weight,
             nli_available=nli_available,
             publisher=publisher_host,
+            stance_note=stance_note,
         ))
 
     # ── Stage 6: Evidence aggregation ────────────────────────────────
