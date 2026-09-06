@@ -782,3 +782,50 @@ furniture. Both directions are pinned by tests — an article about subscription
 prices keeps *"your subscription will renew automatically"* while losing
 *"subscribe today to continue reading"*, and one about cookie rules keeps its
 reporting while losing the consent banner.
+
+### Bug 25 — page JavaScript was extracted as article prose
+
+`article_extractor.py`
+
+`HTMLParser` hands back the body of `<script>` and `<style>` as ordinary
+character data, and the parser collected any character data inside a `<p>`.
+Inline scripts sit inside content blocks constantly — ad slots, embeds,
+analytics beacons — so their source was appended to the paragraph around them.
+
+Reproduced with a config blob a page might plausibly carry:
+
+```
+<p>The prime minister resigned on Tuesday after the vote.
+   <script>var d={"headline":"Google banned in all US cities"};</script></p>
+
+extracted: 'The prime minister resigned on Tuesday after the vote.
+            var d={"headline":"Google banned in all US cities"};'
+```
+
+That string would be sent to NLI as a sentence the publisher wrote. It is the
+one category of text that must never be treated as reporting — it is not the
+publisher's prose, and on a page carrying third-party tags it is not
+necessarily the publisher's content at all. `script`, `style`, `noscript`,
+`template`, `svg`, `iframe`, `code` and `pre` are now never read.
+
+### Bug 26 — pages that don't use `<p>` contributed nothing
+
+`article_extractor.py`
+
+An article body built from `<div>` — AMP templates and several large CMSs —
+yielded **zero** paragraphs. The document then fell back to whatever snippet
+the provider supplied, however much the page actually reported.
+
+`extract_article` now falls back to reading the page as flat text when the
+markup-aware pass finds nothing. `<p>` carries the publisher's own judgement
+about what a paragraph is, so this is deliberately the second choice, and it is
+guarded: non-prose elements are removed first (so the fallback cannot
+reintroduce the leak above), block-level tags become line breaks, and a line
+counts as prose only if it is at least eight words, ends like a sentence, and
+is not boilerplate. On the reproduction page that yields the two reported
+sentences and drops the nav bar, the footer and the script.
+
+The block-boundary step matters more than it looks: without it the nav bar ran
+straight into the lede — *"Home World Business Sport The minister resigned on
+Tuesday."* — as a single unsplittable sentence, so the navigation could not be
+filtered off the front of the story.

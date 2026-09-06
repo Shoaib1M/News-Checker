@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import time
+from html import unescape
 from html.parser import HTMLParser
 from urllib.request import Request, urlopen
 
@@ -35,6 +36,14 @@ USER_AGENT = (
 _VOID_ELEMENTS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
     "meta", "param", "source", "track", "wbr",
+})
+
+
+# Elements whose contents are never prose. Their text is markup, code or
+# styling that happens to be readable, and it is worse than useless as
+# evidence: it is attacker-influenced text presented as publisher text.
+_NON_PROSE_ELEMENTS = frozenset({
+    "script", "style", "noscript", "template", "svg", "iframe", "code", "pre",
 })
 
 
@@ -82,6 +91,14 @@ class _ArticleParser(HTMLParser):
                     break
 
     def handle_data(self, data):
+        # HTMLParser hands back the body of <script> and <style> as ordinary
+        # character data. Inside a <p> — where ad slots, embeds and analytics
+        # beacons routinely sit — that meant page JavaScript was appended to
+        # the article text and classified as something the article said. A
+        # config blob containing "Google banned in all US cities" reached NLI
+        # as a sentence from the publisher.
+        if any(tag in _NON_PROSE_ELEMENTS for tag in self._tag_stack):
+            return
         text = re.sub(r"\s+", " ", data).strip()
         if not text:
             return
@@ -131,12 +148,70 @@ def _fetch_html(url: str, timeout: int = 6, retries: int = 0) -> str:
     raise last_error
 
 
+# Everything a <script> or <style> encloses, removed before the fallback reads
+# the page as flat text. Without this the fallback would reintroduce exactly
+# the leak the parser was fixed to prevent.
+_NON_PROSE_BLOCK_RE = re.compile(
+    r"<(script|style|noscript|template|svg)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+# Block-level elements become line breaks before the markup is thrown away.
+# Without a boundary the flat text runs a nav bar straight into the lede —
+# "Home World Business Sport The minister resigned on Tuesday." — which is one
+# unsplittable sentence, so the navigation could not be filtered off the front
+# of the story.
+_BLOCK_BOUNDARY_RE = re.compile(
+    r"</?(?:div|p|li|ul|ol|section|article|aside|nav|footer|header|main|"
+    r"h[1-6]|td|tr|table|br|blockquote|figcaption|form|button)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+# A block of flat text is treated as a sentence of article prose only if it is
+# this long and ends like a sentence. Navigation items, bylines, tags and
+# button labels are short and unpunctuated; this is what separates them from
+# reporting once the markup that distinguished them is gone.
+_FALLBACK_MIN_WORDS = 8
+
+
+def _text_without_markup(html: str) -> str:
+    """Readable text from a page whose body is not in <p> elements.
+
+    Not the normal path, and deliberately not the first choice: <p> carries
+    the publisher's own judgement about what is a paragraph, and throwing the
+    markup away loses it. But a page that builds its body from <div> — AMP
+    templates and several large CMSs do — yielded ZERO paragraphs and
+    contributed nothing at all, no matter what it reported. Falling back to
+    flat text turns "this publisher never counts" into "this publisher counts,
+    with more noise", and the noise is then filtered like any other text.
+    """
+    stripped = _NON_PROSE_BLOCK_RE.sub(" ", html)
+    stripped = _BLOCK_BOUNDARY_RE.sub("\n", stripped)
+    text = unescape(_TAG_RE.sub(" ", stripped))
+
+    prose: list[str] = []
+    for block in text.split("\n"):
+        block = re.sub(r"[ \t]+", " ", block).strip()
+        if not block:
+            continue
+        for sentence in split_sentences(block):
+            if (len(sentence.split()) >= _FALLBACK_MIN_WORDS
+                    and sentence.rstrip()[-1:] in ".!?\u201d\""
+                    and not is_boilerplate(sentence)):
+                prose.append(sentence)
+    return " ".join(prose)
+
+
 def extract_article(url: str, timeout: int = 6) -> tuple[str, str]:
     """Download a URL and return (title, full_text)."""
     html = _fetch_html(url, timeout=timeout)
     parser = _ArticleParser()
     parser.feed(html)
-    return parser.title, " ".join(parser.paragraphs)
+    text = " ".join(parser.paragraphs)
+    if not text:
+        text = _text_without_markup(html)
+    return parser.title, text
 
 
 # Abbreviations whose full stop does not end a sentence. Splitting on them
