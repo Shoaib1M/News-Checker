@@ -21,7 +21,11 @@ import re
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from article_extractor import extract_article, extract_passages
+from article_extractor import (
+    extract_article,
+    extract_passages,
+    strip_boilerplate,
+)
 from claim_verifier import classify_source, resolve_publisher_host
 from evidence_aggregator import ClassifiedEvidence, compute_stance
 from nli_service import get_nli_service
@@ -279,8 +283,16 @@ def run_pipeline(
         publisher_host = resolve_publisher_host(url, publisher_name)
 
         fetched_title, fetched_text = fetched_articles.get(url, ("", ""))
-        if fetched_text and len(fetched_text.split()) > len((full_text or "").split()):
-            full_text = fetched_text
+        # Compare what each version actually SAYS, not how long it is. A
+        # paywalled page ships a few hundred words of subscription pitch and
+        # none of the story, which outweighed the one real sentence a provider
+        # snippet had given us — so the fetch replaced the only usable text in
+        # the document with marketing copy.
+        if fetched_text:
+            fetched_content = strip_boilerplate(fetched_text, claim)
+            existing_content = strip_boilerplate(full_text or "", claim)
+            if len(fetched_content.split()) > len(existing_content.split()):
+                full_text = fetched_text
         if fetched_title and not title:
             title = fetched_title
 

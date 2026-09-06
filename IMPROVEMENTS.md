@@ -750,3 +750,35 @@ comparing against a timeline, not string matching.
 The evidence card now says *"This article states 62% where the claim says
 95%"*, so a source that reads as relevant but counts as neutral does not look
 like a bug.
+
+### Bug 24 — a paywalled page deleted the only real sentence in the document
+
+`article_extractor.py`, `evidence_pipeline.py`
+
+A paywalled article ships a few hundred words of subscription pitch and none of
+the story. Two things went wrong with that page, and the second is the serious
+one.
+
+Passage selection sent the pitch to NLI. For "the prime minister of India
+resigned this morning", four of the five classified passages were *"Subscribe
+today to continue reading this article"*, *"Your subscription helps fund our
+newsroom"*, *"Choose a plan that works for you"* and *"Unlimited digital access
+from just $1 a week"*. The module docstring had claimed since the beginning
+that it strips "navigation, ads, footers, and cookie text". No such filter
+existed.
+
+Worse: the pipeline replaced the provider's snippet with the fetched page
+whenever the fetch was **longer**. The snippet was the one real sentence in the
+document — *"India's prime minister resigned on Tuesday after coalition talks
+collapsed"*, 13 words — against 38 words of marketing copy. Fetching the
+article destroyed the only usable text in it. The comparison now measures what
+each version says, with furniture removed, rather than how long it is.
+
+The filter matches **phrases**, never bare words, and any sentence sharing
+vocabulary with the claim is exempt whatever it matched. The dangerous failure
+runs the other way: an article about streaming prices is full of the word
+"subscription", and a filter that ate it would delete the story instead of the
+furniture. Both directions are pinned by tests — an article about subscription
+prices keeps *"your subscription will renew automatically"* while losing
+*"subscribe today to continue reading"*, and one about cookie rules keeps its
+reporting while losing the consent banner.

@@ -201,6 +201,61 @@ _PASSAGE_STOPWORDS = frozenset({
 })
 
 
+# Site furniture that survives HTML extraction: the subscription pitch, the
+# consent notice, the newsletter box, the social footer. None of it is what the
+# article says, and on a paywalled page it is very nearly ALL the page ships.
+#
+# These are PHRASES, never bare words. "subscription" alone would delete the
+# real content of any article about streaming prices; "subscribe today to
+# continue reading" cannot appear in a news sentence by accident. That, plus
+# the claim-overlap escape in is_boilerplate(), is what keeps the filter from
+# eating the story it is meant to clean up.
+_BOILERPLATE_PHRASES = (
+    # Paywall and subscription
+    "continue reading", "already a subscriber", "subscribe today",
+    "subscribe now", "your subscription", "unlimited digital access",
+    "cancel anytime", "free trial", "sign in to read", "create an account",
+    "support independent journalism", "choose a plan", "a week for",
+    "this article is for subscribers", "become a member",
+    # Consent and privacy
+    "we use cookies", "accept all cookies", "cookie policy", "privacy policy",
+    "terms of service", "manage your preferences", "consent to the use",
+    # Newsletter and social furniture
+    "sign up for our newsletter", "sign up for the newsletter",
+    "follow us on", "share this article", "download our app",
+    "get the latest news delivered", "newsletter signup",
+    # Legal and navigation footers
+    "all rights reserved", "advertisement", "read more:", "related articles",
+    "photograph:", "image credit", "copyright ",
+)
+
+
+def is_boilerplate(sentence: str, claim_words: set[str] | None = None) -> bool:
+    """True when a sentence is site furniture rather than article content.
+
+    ``claim_words`` is an escape hatch, not an optimisation. A claim about
+    streaming prices makes "your subscription will renew automatically" a
+    sentence genuinely worth reading, and a claim about data protection does
+    the same for a cookie notice. A sentence sharing vocabulary with the claim
+    is therefore never discarded, whatever phrase it matched.
+    """
+    lowered = (sentence or "").lower()
+    if not any(phrase in lowered for phrase in _BOILERPLATE_PHRASES):
+        return False
+    if claim_words and (claim_words & _content_words(sentence)):
+        return False
+    return True
+
+
+def strip_boilerplate(text: str, claim: str = "") -> str:
+    """``text`` with its site furniture removed, sentence by sentence."""
+    if not text:
+        return text
+    claim_words = _content_words(claim)
+    kept = [s for s in split_sentences(text) if not is_boilerplate(s, claim_words)]
+    return " ".join(kept)
+
+
 def _content_words(text: str) -> set[str]:
     """Lowercased words that carry topic, for overlap scoring."""
     return {
@@ -265,6 +320,8 @@ def extract_passages(
     for sentence in sentences:
         if len(passages) >= max_passages:
             break
+        if is_boilerplate(sentence, claim_words):
+            continue
         add(sentence)
 
     return passages[:max_passages]
