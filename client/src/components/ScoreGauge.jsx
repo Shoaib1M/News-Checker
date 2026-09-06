@@ -43,6 +43,9 @@ const NON_NUMERIC_STATES = {
   not_objectively_verifiable: { label: "subjective", color: "#64748b" },
   not_verifiable_yet: { label: "not yet verifiable", color: "#7c3aed" },
   unsupported_no_coverage: { label: "unsupported", color: "#f59e0b" },
+  // The plan is attested; the event has not happened. A number here would be
+  // read as "90% true" for something that is not yet true or false at all.
+  reported_plan: { label: "reported plan", color: "#7c3aed" },
 };
 
 export default function ScoreGauge({ score, assessmentStatus }) {

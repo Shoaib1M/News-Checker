@@ -661,3 +661,39 @@ class TestUnsupportedLanguage(unittest.TestCase):
 
     def test_out_of_scope_is_not_searched(self):
         self.assertFalse(self.triage("印度总理今天早上辞职了").search_worthwhile)
+
+
+# ── 11. The gauge must not put a number on a non-measurement ─────────
+class TestGaugeNumbers(unittest.TestCase):
+    """`combined_score` is an evidence-balance dial, not a truth percentage.
+
+    Only outcomes that genuinely measure evidence for the claim may show a
+    number. `reported_plan` is the subtle one: real evidence exists, but it
+    attests the *announcement*, not the event — so "90" beside "reported as
+    planned — not yet done" reads as "90% true" for something that is not yet
+    true or false at all.
+    """
+
+    def test_outcomes_that_measure_nothing_show_no_number(self):
+        for status in (
+            "insufficient_evidence", "not_a_claim", "not_objectively_verifiable",
+            "not_verifiable_yet", "unsupported_no_coverage", "reported_plan",
+        ):
+            with self.subTest(status=status):
+                self.assertIn(status, main.NON_NUMERIC_STATUSES)
+
+    def test_evidence_outcomes_still_show_a_number(self):
+        for status in ("supported", "contradicted", "mixed"):
+            with self.subTest(status=status):
+                self.assertNotIn(status, main.NON_NUMERIC_STATUSES)
+
+    def test_the_dial_tracks_the_direction_of_the_evidence(self):
+        self.assertGreater(main.evidence_verdict_score({"status": "supported", "net": 0.88}), 80)
+        self.assertLess(main.evidence_verdict_score({"status": "contradicted", "net": -0.85}), 20)
+
+    def test_every_status_has_a_verdict_phrase(self):
+        """A status with no phrase would surface as an empty verdict line."""
+        for status in main.NON_NUMERIC_STATUSES:
+            with self.subTest(status=status):
+                self.assertIn(status, main._STATUS_VERDICTS)
+                self.assertTrue(main._STATUS_VERDICTS[status])

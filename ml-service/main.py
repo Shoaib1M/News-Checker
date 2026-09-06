@@ -340,6 +340,11 @@ _STATUS_VERDICTS: dict[str, str] = {
 NON_NUMERIC_STATUSES = frozenset({
     "insufficient_evidence", "not_a_claim", "not_objectively_verifiable",
     "not_verifiable_yet", "unsupported_no_coverage",
+    # reported_plan too: the dial reads "evidence balance" for the claim, and
+    # a claim about a future event has none. The evidence measures how well
+    # the *announcement* is attested, so showing 90 beside "reported as
+    # planned — not yet done" invites reading it as 90% true.
+    "reported_plan",
 })
 
 
