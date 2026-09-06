@@ -14,6 +14,10 @@ polished, dynamic, and modern, which builds user trust.
 
 import { useEffect, useRef, useState } from "react";
 
+// Shared with HistoryPanel: the same outcome must never be a word in one
+// place and a number in another.
+import { verdictStateFor } from "../verdictStates";
+
 const CIRCUMFERENCE = 2 * Math.PI * 90; // Radius of the circle is 90
 
 /*
@@ -28,26 +32,6 @@ function getStrokeColor(score) {
   return "#059669"; // Dark Green
 }
 
-/*
-PURPOSE: Outcomes where a 0-100 "evidence balance" number would be a lie.
-WHY THIS EXISTS: The gauge previously drew a number for every status except
-`insufficient_evidence`, so a subjective claim or a claim about a future event
-got a confident-looking score computed from evidence that does not exist. Each
-of these states is a statement about the claim, not a measurement of evidence,
-so the dial shows a word instead of a number. Colors stay inside the app's
-existing palette — slate for "we can't say", amber for a real negative finding.
-*/
-const NON_NUMERIC_STATES = {
-  insufficient_evidence: { label: "unverified", color: "#64748b" },
-  not_a_claim: { label: "no claim", color: "#64748b" },
-  not_objectively_verifiable: { label: "subjective", color: "#64748b" },
-  not_verifiable_yet: { label: "not yet verifiable", color: "#7c3aed" },
-  unsupported_no_coverage: { label: "unsupported", color: "#f59e0b" },
-  // The plan is attested; the event has not happened. A number here would be
-  // read as "90% true" for something that is not yet true or false at all.
-  reported_plan: { label: "reported plan", color: "#7c3aed" },
-};
-
 export default function ScoreGauge({ score, assessmentStatus }) {
   const [displayScore, setDisplayScore] = useState(0);
   const [offset, setOffset] = useState(CIRCUMFERENCE); // Start fully empty
@@ -58,7 +42,7 @@ export default function ScoreGauge({ score, assessmentStatus }) {
     // For a non-numeric outcome the ring stays empty: combined_score is a
     // placeholder 50 in those states, and drawing it as a half-full dial
     // implied a measured "middling" result next to a "—" readout.
-    const ringScore = NON_NUMERIC_STATES[assessmentStatus] ? 0 : score;
+    const ringScore = verdictStateFor(assessmentStatus) ? 0 : score;
     const target = CIRCUMFERENCE - (ringScore / 100) * CIRCUMFERENCE;
     // Small delay ensures the animation doesn't finish before the browser actually renders the element
     const timer = setTimeout(() => setOffset(target), 100);
@@ -91,7 +75,7 @@ export default function ScoreGauge({ score, assessmentStatus }) {
     };
   }, [score, assessmentStatus]);
 
-  const nonNumeric = NON_NUMERIC_STATES[assessmentStatus];
+  const nonNumeric = verdictStateFor(assessmentStatus);
   const color = nonNumeric ? nonNumeric.color : getStrokeColor(score);
 
   return (

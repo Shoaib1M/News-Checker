@@ -109,5 +109,62 @@ class TestResponseFieldsSurviveHistory(unittest.TestCase):
                 )
 
 
+
+class TestNonNumericStatusesAreInSync(unittest.TestCase):
+    """The backend and the frontend must agree on which outcomes show a number.
+
+    `combined_score` carries a placeholder 50 for outcomes that aren't a
+    measurement of evidence. If the frontend doesn't know a status is one of
+    those, it draws that 50 as a confident amber "middling" score — which is
+    how a saved check of "asdkjh asdkjh" came to appear in the history list as
+    a half-true claim.
+
+    The rule lived in three places at once (the gauge, the history list, and
+    ml-service). It is now one module per side, and this asserts the two sides
+    list the same statuses.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (REPO_ROOT / "client" / "src" / "verdictStates.js").read_text()
+
+    def test_the_frontend_lists_every_backend_non_numeric_status(self):
+        missing = [
+            status for status in sorted(main.NON_NUMERIC_STATUSES)
+            if not re.search(rf"^\s*{status}\s*:", self.source, re.MULTILINE)
+        ]
+        self.assertEqual(
+            missing, [],
+            "client/src/verdictStates.js is missing these, so the UI will draw "
+            "a placeholder 50 for them as if it were a real score",
+        )
+
+    def test_the_frontend_lists_nothing_the_backend_scores_numerically(self):
+        declared = set(re.findall(r"^\s*([a-z_]+)\s*:\s*\{", self.source, re.MULTILINE))
+        extra = sorted(declared - main.NON_NUMERIC_STATUSES)
+        self.assertEqual(
+            extra, [],
+            "these are scored numerically by the backend but hidden by the UI",
+        )
+
+    def test_every_non_numeric_status_has_a_label_and_colour(self):
+        for status in sorted(main.NON_NUMERIC_STATUSES):
+            with self.subTest(status=status):
+                block = re.search(
+                    rf"^\s*{status}\s*:\s*\{{(.*?)\}}", self.source,
+                    re.MULTILINE | re.DOTALL,
+                )
+                self.assertIsNotNone(block)
+                self.assertIn("label:", block.group(1))
+                self.assertIn("color:", block.group(1))
+
+    def test_both_score_gauge_and_history_panel_use_the_shared_module(self):
+        """Either one keeping a private copy is how they drifted the first time."""
+        for component in ("ScoreGauge.jsx", "HistoryPanel.jsx"):
+            with self.subTest(component=component):
+                source = (REPO_ROOT / "client" / "src" / "components" / component).read_text()
+                self.assertIn("verdictStates", source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
