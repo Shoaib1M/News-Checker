@@ -203,3 +203,94 @@ class TestBothDirectionsRequireDominance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCredibleSourcesReachNLI(unittest.TestCase):
+    """Which candidates get spent on NLI, when there are more than fit.
+
+    Only `max_results` documents are ever classified, and they were chosen by
+    lexical relevance alone. For a viral false claim that is backwards: the
+    posts repeating the claim use its precise wording, while the debunkings
+    describe the situation in their own. Measured on the pool below, a
+    PolitiFact fact-check ranked NINTH behind eight rumour blogs and never
+    reached NLI — so the system would have classified eight copies of the
+    rumour and reported the claim supported.
+    """
+
+    CLAIM = "The United States banned Google across all its cities"
+
+    RUMOUR_BLOGS = [
+        ("Google ban rumours spread across all US cities",
+         "Reports of a Google ban in all US cities spread widely."),
+        ("Google banned in all United States cities, users say",
+         "A Google ban across all US cities was reported."),
+        ("US cities Google ban: everything we know",
+         "The Google ban across all US cities explained."),
+        ("All US cities affected by Google ban claims",
+         "The claimed Google ban across all cities."),
+        ("Google ban across every US city discussed",
+         "Discussion of a Google ban across US cities."),
+        ("US Google ban in all cities trends online",
+         "The Google ban in all US cities trended."),
+        ("Google ban all US cities update",
+         "Update on the Google ban across all US cities."),
+        ("Google banned across US cities, posts allege",
+         "Posts allege Google was banned across US cities."),
+    ]
+
+    CREDIBLE = [
+        ("politifact.com", "Fact check: the US has not banned Google",
+         "No such nationwide prohibition exists, officials confirm."),
+        ("reuters.com", "No US ban on Google, regulators confirm",
+         "Regulators said no prohibition is in force."),
+    ]
+
+    def select(self, max_results=8):
+        from claim_verifier import classify_source
+        from evidence_pipeline import _select_for_classification
+        from relevance_filter import RelevanceFilter
+
+        rows = [(f"blog{i}.example", t, b) for i, (t, b) in enumerate(self.RUMOUR_BLOGS)]
+        rows += list(self.CREDIBLE)
+        documents = [
+            {"url": f"https://{domain}/{i}", "title": title, "snippet": body,
+             "text": body * 20, "source": domain, "provider": "p"}
+            for i, (domain, title, body) in enumerate(rows)
+        ]
+        included, _excluded = RelevanceFilter().filter_documents(
+            self.CLAIM, documents, strict=True
+        )
+        selected = _select_for_classification(included, max_results)
+        return selected, classify_source
+
+    def test_credible_sources_are_not_crowded_out_by_rumour_posts(self):
+        selected, classify_source = self.select()
+        tiers = {classify_source(d["url"], d["source"]).tier for d in selected}
+        self.assertIn("fact-check", tiers)
+        self.assertIn("reporting", tiers)
+
+    def test_the_result_count_is_still_capped(self):
+        selected, _ = self.select(max_results=8)
+        self.assertEqual(len(selected), 8)
+
+    def test_relevance_order_is_preserved_among_the_chosen(self):
+        selected, _ = self.select()
+        scores = [d["_relevance_score"].overall_relevance for d in selected]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_with_no_credible_sources_selection_is_plain_relevance_order(self):
+        from evidence_pipeline import _select_for_classification
+        from relevance_filter import RelevanceFilter
+
+        documents = [
+            {"url": f"https://blog{i}.example/{i}", "title": t, "snippet": b,
+             "text": b * 20, "source": f"blog{i}.example", "provider": "p"}
+            for i, (t, b) in enumerate(self.RUMOUR_BLOGS)
+        ]
+        included, _ = RelevanceFilter().filter_documents(self.CLAIM, documents, strict=True)
+        self.assertEqual(_select_for_classification(included, 4), included[:4])
+
+    def test_a_short_candidate_list_is_returned_untouched(self):
+        from evidence_pipeline import _select_for_classification
+        documents = [{"url": "https://a.example/1", "source": "a.example"}]
+        self.assertEqual(_select_for_classification(documents, 8), documents)

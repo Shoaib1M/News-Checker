@@ -80,6 +80,25 @@ _SEARCH_BUDGET_SHARE = 0.5
 # them on a two-line stub. Judging a claim needs a paragraph or two.
 MIN_WORDS_WITHOUT_FETCH = 120
 
+# Slots reserved, out of `max_results`, for candidates from a classified
+# source — primary, fact-check, reporting or reference.
+#
+# Only `max_results` documents are ever NLI-classified, and they were chosen by
+# lexical relevance alone. For a viral false claim that is exactly backwards:
+# the posts repeating the claim use its precise wording, while the debunkings
+# describe the situation in their own. Measured on a realistic pool for "The
+# United States banned Google across all its cities", eight rumour blogs scored
+# 0.78-0.94 and a PolitiFact fact-check scored 0.735 — so the fact-check ranked
+# NINTH and never reached NLI. The system would have classified eight copies of
+# the rumour and reported the claim supported.
+#
+# Reserving slots rather than adding a score bonus keeps relevance ranking
+# untouched: a credible source still has to pass the relevance filter to be a
+# candidate at all, and the reserved seats are filled in relevance order. There
+# is no magic constant weighing "authority" against "aboutness" — the rule is
+# simply that if credible sources were found, some of them get read.
+RESERVED_TIER_SLOTS = 3
+
 # A passage must reach this entailment/contradiction score before it counts as
 # taking a side at all.
 STANCE_THRESHOLD = 0.35
@@ -107,6 +126,35 @@ _CLAIM_REPORTING_FRAME = re.compile(
     r"|\bclaims?\s+(?:that\s+)?(?:have|has)\s+(?:been\s+)?circulat",
     re.IGNORECASE,
 )
+
+
+def _select_for_classification(included: list[dict], max_results: int) -> list[dict]:
+    """Choose which relevant candidates get spent on NLI.
+
+    Relevance order, except that up to ``RESERVED_TIER_SLOTS`` places are held
+    for candidates from a classified source, so a crowd of near-identical
+    low-tier posts cannot push every credible source past the cut. See
+    ``RESERVED_TIER_SLOTS`` for the measurement behind this.
+
+    With no classified sources among the candidates this returns exactly the
+    same list as a plain relevance-ordered slice.
+    """
+    if len(included) <= max_results:
+        return included
+
+    tiered = [
+        doc for doc in included
+        if classify_source(doc["url"], doc.get("source", "")).weight > 0
+    ]
+    reserved = tiered[:min(RESERVED_TIER_SLOTS, max_results)]
+    reserved_urls = {doc["url"] for doc in reserved}
+
+    remaining = max_results - len(reserved)
+    filler = [doc for doc in included if doc["url"] not in reserved_urls][:remaining]
+
+    chosen_urls = reserved_urls | {doc["url"] for doc in filler}
+    # Return in the original relevance order so downstream ranking is stable.
+    return [doc for doc in included if doc["url"] in chosen_urls]
 
 
 def run_pipeline(
@@ -190,7 +238,7 @@ def run_pipeline(
     # judge, so nearly every candidate needs its page pulled. Doing that one
     # at a time meant a handful of stalling news sites serialized into
     # minutes of wall time.
-    selected = included[:max_results]
+    selected = _select_for_classification(included, max_results)
     fetched_articles: dict[str, tuple[str, str]] = {}
 
     if fetch_articles:
