@@ -653,7 +653,6 @@ Budget 1GB+ of RAM regardless of choice — PyTorch's own import footprint is 30
 
 The **Binary Truth MLP** (`binary_truth_mlp.py`) is a from-scratch NumPy neural network (no PyTorch/sklearn) trained on the **LIAR dataset** (12,836 labeled political statements), collapsed from 6 classes to binary "Fake-ish"/"True-ish".
 
-> ⚠️ The commonly-cited **72.38%** LIAR result uses speaker metadata (party, job, historical truth counts) that the production API never receives. That number must never be shown as this system's real-world accuracy.
 
 The production-equivalent, statement-only evaluation:
 
