@@ -1369,3 +1369,70 @@ The shipped `binary_truth_mlp.pkl` is unaffected: it carries its own saved
 vocabulary and still scores 0.6188. It is simply one draw from the old
 non-deterministic ordering — a freshly trained baseline now scores 0.6243 on
 test, comfortably inside its interval.
+
+### Bug 38 — early stopping produced degenerate models
+
+`binary_truth_mlp.py`
+
+The network starts almost flat. Inputs are L2-normalised sparse rows — about
+**24 non-zeros out of 26,626** — so He initialisation scaled for dense inputs
+leaves hidden activations near **0.004** and outputs in **0.4957–0.5056**.
+Validation loss therefore sits at ln(2) ≈ 0.693 for the first several epochs
+while the weights climb out.
+
+Patience counted that flat stretch as "no improvement". In the sweep, both
+`hidden 32` and `hidden 128` halted around epoch 11 and scored **exactly**
+0.5202 — the majority-class baseline, threshold 0.30. Two different
+architectures, identical to four decimals, because both had learned nothing.
+They were reported as measurements.
+
+A warmup now gates stopping, so it means "stopped improving" rather than "has
+not started yet". After the fix the same variants score 0.6269 and 0.6285.
+
+**A second fault in the first version of the fix:** it skipped the whole block
+during warmup, which also meant no best-weights were recorded. A run whose best
+model arrived inside the warmup window — `lr 0.5` peaks around epoch 15 — would
+have discarded it and kept a later, worse one. The warmup gates the *stop
+decision* only; tracking runs from epoch one.
+
+### The sweep result: the shipped configuration survives
+
+`train_experiments.py`, 9 variants, selection on validation, test touched once.
+
+| variant | valid acc | 95% CI |
+|---|---|---|
+| min_df 3 + early stop | 0.6386 | [0.6114, 0.6643] |
+| min_df 3 + lr 0.5 + stop | 0.6355 | [0.6098, 0.6597] |
+| lr 0.5 + early stop | 0.6332 | [0.6075, 0.6597] |
+| **baseline (shipped)** | **0.6324** | **[0.6067, 0.6573]** |
+| lr 0.25 + early stop | 0.6316 | [0.6051, 0.6573] |
+| early stopping | 0.6285 | [0.6020, 0.6534] |
+| hidden 128 + early stop | 0.6285 | [0.6028, 0.6542] |
+| hidden 32 + early stop | 0.6269 | [0.5996, 0.6519] |
+| lr 0.5 (no stopping) | 0.6215 | [0.5950, 0.6480] |
+
+**Nothing clears the incumbent's interval.** Every variant lands within 1.7
+points of every other, on intervals ±2.5 points wide. The leader beats the
+incumbent by 0.6 points — well inside noise, and with nine variants the maximum
+drifts upward by multiple comparisons alone. The shipped model stays, and the
+held-out figure stands at **0.6188**.
+
+That is a result, not a failed run: the configuration was checked against eight
+alternatives rather than chosen once and left.
+
+**Two real findings underneath the flat table:**
+
+- **The learning rate is roughly 10× too small for how the inputs are scaled.**
+  At the shipped `lr=0.05`, validation loss after 15 epochs is still 0.6913 —
+  essentially ln(2) — with an output spread of 0.057. At `lr=0.5` the same 15
+  epochs reach 0.6332 with a spread of 0.642. Paired with early stopping it
+  matches the incumbent's accuracy in **107s against 227s**. Not an accuracy
+  win; a training-time win of more than half, and an explanation of why 70
+  epochs were needed.
+- **42% of the vocabulary is dead weight.** `min_df 3` cuts it from 26,626 to
+  15,520 features and scores *higher* than the incumbent (inside noise). The
+  terms appearing in one or two documents contribute nothing but capacity to
+  overfit.
+
+Neither is worth shipping on its own evidence. Both are worth knowing, and both
+point the same way: this model's ceiling is the task, not the tuning.

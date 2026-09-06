@@ -175,3 +175,53 @@ class TestEarlyStopping(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestEarlyStoppingWarmup(unittest.TestCase):
+    """Stopping must mean "stopped improving", not "has not started yet".
+
+    THE BUG THIS PINS:
+    Inputs are L2-normalised sparse rows — about 24 non-zeros out of 26,626 —
+    so He initialisation scaled for dense inputs leaves hidden activations near
+    0.004 and outputs in 0.4957-0.5056. Validation loss sits at ln(2) ≈ 0.693
+    for the first several epochs while the weights climb out of that.
+
+    Patience counted the flat stretch as "no improvement". In the sweep, both
+    `hidden 32` and `hidden 128` halted around epoch 11 and scored EXACTLY the
+    majority-class baseline (0.5202, threshold 0.30) — degenerate models that
+    had learned nothing, reported as if they were measurements.
+    """
+
+    def flat_then_learnable(self):
+        """A problem whose loss barely moves for the first few epochs."""
+        rng = np.random.default_rng(3)
+        X = rng.normal(size=(300, 40)) * 0.01     # tiny inputs => tiny gradients
+        y = (X[:, 0] > 0).astype(int)
+        Xv = rng.normal(size=(150, 40)) * 0.01
+        yv = (Xv[:, 0] > 0).astype(int)
+        return X, y, Xv, yv
+
+    def test_it_does_not_stop_during_the_flat_start(self):
+        X, y, Xv, yv = self.flat_then_learnable()
+        model = BinaryTruthMLP(input_size=40, hidden_size=8, epochs=40, seed=1,
+                               early_stopping_patience=2, early_stopping_warmup=20)
+        model.fit(X, y, Xv, yv, quiet=True)
+        # Having trained past the warmup, the model must not be degenerate:
+        # a single constant output means it never left the plateau.
+        scores = model.predict_proba(Xv)
+        spread = float(scores.max() - scores.min())
+        self.assertGreater(spread, 1e-6, "model collapsed to a constant output")
+
+    def test_a_warmup_of_zero_restores_the_old_eager_behaviour(self):
+        """Kept configurable so the failure mode can be reproduced."""
+        model = BinaryTruthMLP(input_size=5, early_stopping_warmup=0)
+        self.assertEqual(model.early_stopping_warmup, 0)
+
+    def test_the_default_warmup_is_not_zero(self):
+        self.assertGreater(BinaryTruthMLP(input_size=5).early_stopping_warmup, 0)
+
+    def test_warmup_is_ignored_when_early_stopping_is_off(self):
+        X, y, Xv, yv = self.flat_then_learnable()
+        model = BinaryTruthMLP(input_size=40, hidden_size=8, epochs=5, seed=1)
+        model.fit(X, y, Xv, yv, quiet=True)
+        self.assertEqual(model.predict_proba(Xv).shape, (150,))

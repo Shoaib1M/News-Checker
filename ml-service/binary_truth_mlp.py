@@ -59,6 +59,7 @@ class BinaryTruthMLP:
         seed=42,
         weight_decay=0.0,
         early_stopping_patience=None,
+        early_stopping_warmup=15,
     ):
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -69,10 +70,21 @@ class BinaryTruthMLP:
         # behaviour: no regularisation at all, on 26,626 input dimensions and
         # roughly ten thousand training rows.
         self.weight_decay = weight_decay
-        # Stop when validation loss has not improved for this many reporting
-        # rounds, and restore the best weights seen. None runs every epoch
-        # regardless of what validation is doing.
+        # Stop when validation loss has not improved for this many epochs, and
+        # restore the best weights seen. None runs every epoch regardless of
+        # what validation is doing.
         self.early_stopping_patience = early_stopping_patience
+        # Epochs before stopping may fire at all. This network starts almost
+        # flat — inputs are L2-normalised sparse rows (~24 non-zeros of
+        # 26,626), so He initialisation scaled for dense inputs gives hidden
+        # activations around 0.004 and outputs in 0.4957-0.5056. Validation
+        # loss therefore sits at ln(2) for the first several epochs while the
+        # weights climb out, and patience counted that flat stretch as "no
+        # improvement": hidden_size 32 and 128 both stopped around epoch 11
+        # and scored EXACTLY the majority-class baseline, 0.5202, having
+        # learned nothing. A warmup makes stopping mean "stopped improving"
+        # rather than "has not started yet".
+        self.early_stopping_warmup = early_stopping_warmup
 
         # The threshold determines where we draw the line between False and True.
         # It defaults to 0.5 (50%), but we "tune" it during training to find the best cutoff.
@@ -191,11 +203,18 @@ class BinaryTruthMLP:
                                     self.W2.copy(), self.b2.copy())
                 else:
                     rounds_without_improvement += 1
-                    if rounds_without_improvement >= self.early_stopping_patience:
-                        if not quiet:
-                            print(f"  early stop at epoch {epoch} "
-                                  f"(best valid loss {best_valid_loss:.4f})")
-                        break
+                # The warmup gates the STOP decision, not the tracking. An
+                # earlier version skipped this whole block during warmup, which
+                # also meant no weights were recorded — so a run whose best
+                # model arrived inside the warmup window (lr 0.5 peaks around
+                # epoch 15) would have thrown it away and kept a later, worse
+                # one. Track always; refuse to stop early.
+                if (epoch > self.early_stopping_warmup
+                        and rounds_without_improvement >= self.early_stopping_patience):
+                    if not quiet:
+                        print(f"  early stop at epoch {epoch} "
+                              f"(best valid loss {best_valid_loss:.4f})")
+                    break
 
             # Reporting
             should_report = epoch == 1 or epoch % 5 == 0

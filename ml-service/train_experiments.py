@@ -77,6 +77,25 @@ VARIANTS = [
     ("hidden 128 + early stop", {}, {"hidden_size": 128, "early_stopping_patience": 5, "epochs": 70}),
     ("min_df 3 + early stop",   {"min_df": 3}, {"early_stopping_patience": 5, "epochs": 70}),
     ("min_df 1 + early stop",   {"min_df": 1}, {"early_stopping_patience": 5, "epochs": 70}),
+    # Learning rate, added after a probe showed the shipped 0.05 leaves
+    # validation loss at ln(2) with an output spread of 0.057 after 15 epochs —
+    # the network is barely differentiating anything. At lr 0.5 the same 15
+    # epochs reach the accuracy the incumbent needs 70 for.
+    ("lr 0.25",                 {}, {"learning_rate": 0.25}),
+    ("lr 0.5",                  {}, {"learning_rate": 0.5}),
+    ("lr 1.0",                  {}, {"learning_rate": 1.0}),
+    ("lr 0.5 + L2 1e-4",        {}, {"learning_rate": 0.5, "weight_decay": 1e-4}),
+    # The combination the lr probe points at: reach the good region fast, then
+    # stop before overfitting undoes it. lr 0.5 scores 0.6332 at 15 epochs and
+    # 0.6215 by 70, so the peak is real and the decline is real.
+    ("lr 0.5 + early stop",     {}, {"learning_rate": 0.5, "early_stopping_patience": 5}),
+    ("lr 0.25 + early stop",    {}, {"learning_rate": 0.25, "early_stopping_patience": 5}),
+    # One motivated combination, not a grid. Both min_df 3 (smaller vocabulary)
+    # and early stopping point the same way — less effective capacity — so
+    # pairing them tests that reading rather than fishing. Adding combinations
+    # indefinitely would inflate the leader by multiple comparisons alone.
+    ("min_df 3 + lr 0.5 + stop", {"min_df": 3},
+     {"learning_rate": 0.5, "early_stopping_patience": 5}),
 ]
 
 BASE_MODEL_KWARGS = {
