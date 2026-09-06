@@ -102,12 +102,23 @@ class VerdictCaseMixin:
         results: list[SearchResult] | None = None,
         nli: StubNLI | None = None,
         search_status: str = "success",
+        providers: tuple[str, ...] = ("gnews", "google_news"),
     ) -> dict:
+        """``providers`` names the providers that ANSWERED.
+
+        Two by default because that is what a working search looks like. This
+        harness used to stub exactly one, which meant every absence-of-coverage
+        test was asserting that a single provider is enough to say "no credible
+        source reports this" — and the code agreed with it.
+        """
         results = results or []
-        diagnostics = [ProviderDiagnostic(
-            provider="gnews", query="q", enabled=True, status=search_status,
-            raw_result_count=len(results), new_result_count=len(results),
-        )]
+        diagnostics = [
+            ProviderDiagnostic(
+                provider=name, query="q", enabled=True, status=search_status,
+                raw_result_count=len(results), new_result_count=len(results),
+            )
+            for name in providers
+        ]
         nli = nli or StubNLI()
 
         def fake_search(queries, **kwargs):
@@ -189,6 +200,30 @@ class TestAbsenceOfCoverage(VerdictCaseMixin, unittest.TestCase):
         self.assertEqual(body["verification"]["status"], "insufficient_evidence")
         self.assertEqual(body["retrieval"]["status"], "SEARCH_FAILED")
         self.assertIn("retrieval failure", body["reasoning"])
+
+    def test_absence_verdict_needs_more_than_one_provider(self):
+        """"No credible source reports this" is a claim about the press. One
+        working provider while the rest are blocked or down is not a canvass
+        of it — it is a quarter of one."""
+        body = self.check(
+            "Elon Musk bought the Eiffel Tower for 3 trillion dollars",
+            results=make_results(self.BACKGROUND),
+            providers=("gnews",),
+        )
+        self.assertNotEqual(body["verification"]["status"], "unsupported_no_coverage")
+        self.assertEqual(body["verification"]["status"], "insufficient_evidence")
+
+    def test_a_provider_that_found_nothing_still_counts_as_having_looked(self):
+        """It is the difference between silence and blindness: `no_results`
+        looked and found nothing, `failed` never looked."""
+        from evidence_aggregator import assess_coverage
+        empty = {"supporting_count": 0, "contradicting_count": 0}
+        self.assertIsNotNone(assess_coverage(
+            empty, retrieval_status="SEARCH_SUCCESS", candidate_count=5,
+            salience="high", providers_answered=2))
+        self.assertIsNone(assess_coverage(
+            empty, retrieval_status="SEARCH_SUCCESS", candidate_count=5,
+            salience="high", providers_answered=1))
 
     def test_absence_verdict_needs_a_real_pool_of_candidates(self):
         body = self.check(

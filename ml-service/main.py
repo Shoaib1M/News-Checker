@@ -573,6 +573,22 @@ def _build_reasoning(
     )
 
 
+def _providers_answered(diagnostics: list[dict]) -> int:
+    """Distinct providers whose query completed, whether or not it found anything.
+
+    This is what makes silence mean something. A provider reporting
+    `no_results` looked and found nothing; a provider reporting `failed` is
+    blind, and counting it would turn an outage into a finding about the
+    world. Counted per provider rather than per query, because the same
+    provider answering four queries is still one view of the press.
+    """
+    return len({
+        diagnostic.get("provider")
+        for diagnostic in diagnostics or []
+        if diagnostic.get("status") in {"success", "no_results"}
+    })
+
+
 def _independent_backing(stance: dict) -> int:
     """Distinct publishers backing the verdict's direction.
 
@@ -794,6 +810,7 @@ def check_statement(request: CheckRequest):
             retrieval_status=retrieval_status,
             candidate_count=candidate_count,
             salience=triage.salience,
+            providers_answered=_providers_answered(retrieval_diagnostics),
             prospective=triage.is_prospective,
             nli_ready=nli_svc.is_available,
             negated=triage.negated,

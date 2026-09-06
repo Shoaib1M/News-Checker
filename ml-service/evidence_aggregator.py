@@ -202,11 +202,19 @@ MIN_CANDIDATES_FOR_ABSENCE = 4
 _SEARCH_WORKED = {"SEARCH_SUCCESS", "SEARCH_PARTIAL", "NO_RELEVANT_RESULTS"}
 
 
+# How many providers must actually have ANSWERED before silence means
+# anything. A provider that returned nothing looked and found nothing, which
+# is what absence-of-coverage is made of; a provider that failed is simply
+# blind, and one working provider is not a canvass of the press.
+MIN_PROVIDERS_FOR_ABSENCE = 2
+
+
 def assess_coverage(
     stance: dict,
     retrieval_status: str,
     candidate_count: int,
     salience: str,
+    providers_answered: int,
     prospective: bool = False,
     nli_ready: bool = True,
     negated: bool = False,
@@ -220,6 +228,14 @@ def assess_coverage(
        A failed or timed-out search tells us nothing about the world.
     2. It returned a real pool of candidates (``MIN_CANDIDATES_FOR_ABSENCE``).
        Two results is a thin search, not a canvass of the press.
+    2b. Enough providers actually ANSWERED (``MIN_PROVIDERS_FOR_ABSENCE``).
+       ``SEARCH_PARTIAL`` means some providers failed, and it was accepted
+       here on the strength of the candidate count alone — so one working
+       provider returning four results was enough to announce "no credible
+       source reports this" while three quarters of our view of the press was
+       blind. A provider that answered "nothing found" counts: it looked. A
+       provider that failed does not: it is not evidence of silence, it is an
+       absence of looking.
     3. Nothing in that pool supported the claim, and nothing contradicted it
        either — a contradiction is stronger evidence and should win on its own.
     4. The claim is high-salience: a true version of it could not have gone
@@ -235,6 +251,11 @@ def assess_coverage(
 
     Parameters
     ----------
+    providers_answered:
+        Distinct providers whose query completed, whether or not it returned
+        anything. Required rather than defaulted: a default here would let a
+        caller skip the guard by forgetting it, and the failure mode is a
+        confident statement about the world.
     prospective:
         True when the claim describes a future event. The wording changes —
         the finding is that no source reports the *plan*, not that no source
@@ -247,6 +268,8 @@ def assess_coverage(
     if retrieval_status not in _SEARCH_WORKED:
         return None
     if candidate_count < MIN_CANDIDATES_FOR_ABSENCE:
+        return None
+    if providers_answered < MIN_PROVIDERS_FOR_ABSENCE:
         return None
     if salience != "high":
         return None

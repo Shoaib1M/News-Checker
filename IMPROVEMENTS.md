@@ -910,3 +910,43 @@ what keeps accented letters and non-Latin scripts intact.
 Writing the tests found a bug in the normaliser: a trailing "can someone
 confirm" was removed without the comma before it, and that comma then
 travelled into every dispatched query.
+
+### Bug 28 — "no credible source reports this", said with three quarters of the press unread
+
+`evidence_aggregator.py`, `main.py`
+
+`unsupported_no_coverage` is the strongest statement this system makes about
+the world. Six guards protected it — the search must have run, returned a real
+pool, found nothing either way, on a high-salience non-negated claim, with NLI
+available — and one hole ran straight through them.
+
+`SEARCH_PARTIAL` was accepted, and partial means **some providers failed**. The
+only breadth check was the candidate count, which doesn't care where the
+candidates came from. So one working provider returning four results was
+enough:
+
+```
+SEARCH_PARTIAL, 4 candidates, high salience
+  -> "no credible source reports this"
+```
+
+Three providers blocked or rate-limited, one answered, and the system reported
+on the state of the press. That is the failure mode `check_providers.py` exists
+to warn about, arriving as a verdict instead of a diagnostic.
+
+Absence now also requires that at least two providers actually **answered**.
+The distinction that matters is between silence and blindness: a provider
+returning `no_results` looked and found nothing, which is what
+absence-of-coverage is made of; a provider that `failed` never looked, and
+counting it turns an outage into a finding. Counted per provider rather than
+per query — the same provider answering four queries is still one view of the
+press.
+
+`providers_answered` is a **required** parameter, not a defaulted one. A
+default would let a caller skip the guard by forgetting it, and what is on the
+other side of it is a confident claim about the world.
+
+**The existing tests agreed with the bug.** The shared harness stubbed exactly
+one provider, so every absence-of-coverage test was asserting that a single
+provider is enough. The harness now stubs two, which is what a working search
+looks like, and a new test pins that one is not enough.

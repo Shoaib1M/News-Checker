@@ -7,7 +7,11 @@ if str(SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(SERVICE_DIR))
 
 from nli_service import NLIService, UnresolvableLabelError, _normalise_label
-from claim_verifier import classify_source, extract_claims
+from claim_verifier import (
+    classify_source,
+    extract_claims,
+    resolve_publisher_host,
+)
 
 
 class FakePipeline:
@@ -106,3 +110,59 @@ class ClaimVerifierTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSourceTierCannotBeClaimed(unittest.TestCase):
+    """Tier decides how much a document's stance counts. It must come from
+    where the article actually lives, never from what the page says about
+    itself.
+
+    Nothing here is currently broken — this pins behaviour that is easy to
+    regress into, because the obvious implementations of both halves are
+    wrong. Substring matching on the URL hands 0.8 to
+    `reuters.com.breaking-news.co`, and trusting the publisher name hands it
+    to any blog whose feed says "Reuters".
+    """
+
+    LOOKALIKES = [
+        "https://reuters.com.breaking-news.co/x",   # the real host is a subdomain
+        "https://reuters.com.evil.io/x",
+        "https://notreuters.com/x",                 # prefix
+        "https://fake-bbc.co.uk/x",
+        "https://bbc.co.uk.news-daily.net/x",
+        "https://myblog.example/reuters.com/x",     # in the path
+        "https://politifact.com.rumours.biz/x",
+        "https://apnews.co/x",                      # near-miss TLD
+    ]
+
+    def test_a_lookalike_domain_earns_nothing(self):
+        for url in self.LOOKALIKES:
+            with self.subTest(url=url):
+                profile = classify_source(url, "")
+                self.assertEqual(profile.tier, "unclassified", url)
+                self.assertEqual(profile.weight, 0.0, url)
+
+    def test_the_genuine_domain_still_classifies(self):
+        for url in ("https://reuters.com/article/x",
+                    "https://www.reuters.com/article/x"):
+            with self.subTest(url=url):
+                self.assertNotEqual(classify_source(url, "").tier, "unclassified")
+
+    def test_a_self_declared_publisher_name_grants_no_tier(self):
+        """Any site can call itself Reuters in its own feed metadata."""
+        for url, name in (
+            ("https://randomblog.example/x", "Reuters"),
+            ("https://viralrumours.biz/x", "BBC News"),
+            ("https://myblog.wordpress.com/x", "The Associated Press"),
+            ("https://spam.example/x", "PolitiFact"),
+        ):
+            with self.subTest(url=url, name=name):
+                self.assertEqual(classify_source(url, name).tier, "unclassified")
+
+    def test_an_aggregator_link_still_resolves_to_the_real_publisher(self):
+        """The one case where the name is load-bearing: a Google News URL
+        names the aggregator, so without this every source would be
+        news.google.com and tier weighting would stop working entirely."""
+        url = "https://news.google.com/rss/articles/CBMi"
+        self.assertEqual(resolve_publisher_host(url, "Reuters"), "reuters.com")
+        self.assertEqual(classify_source(url, "Reuters").tier, "reporting")
