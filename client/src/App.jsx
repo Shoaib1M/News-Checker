@@ -42,6 +42,23 @@ Every message here says what failed and what to do, and none of them can be
 mistaken for a verdict. The technical detail is kept, because the most common
 cause is a misconfigured FASTAPI_URL and hiding that wastes an afternoon.
 */
+/*
+PURPOSE: How many independent publishers actually back the verdict shown.
+
+WHY THIS EXISTS: The two sides can disagree, and source tiering means the
+smaller side can win — two credible publishers outweigh six anonymous ones.
+Reporting the larger count then credits the verdict with sources that argued
+against it. Mirrors `_independent_backing` in ml-service/main.py.
+*/
+function publishersBackingVerdict(result) {
+  const supporting = result.evidence?.independent_supporting || 0;
+  const contradicting = result.evidence?.independent_contradicting || 0;
+  const status = result.verification?.status || result.assessment_status;
+  if (status === "supported" || status === "reported_plan") return supporting;
+  if (status === "contradicted") return contradicting;
+  return Math.max(supporting, contradicting);
+}
+
 function describeRequestFailure(status, payload) {
   const detail = payload?.upstream ? ` (tried ${payload.upstream})` : "";
   if (status === 400) {
@@ -634,13 +651,18 @@ function App() {
             return (
               <div className="evidence-section" id="evidence-section">
                 {evidence.length > 0 && (() => {
-                  // Independent publishers, not article count. Four reprints
-                  // of one wire story are one confirmation, and this is the
-                  // only number on screen that says so.
-                  const publishers = Math.max(
-                    result.evidence?.independent_supporting || 0,
-                    result.evidence?.independent_contradicting || 0,
-                  );
+                  // Independent publishers backing THIS verdict's direction,
+                  // mirroring the backend's _independent_backing. Four
+                  // reprints of one wire story are one confirmation, and this
+                  // is the only number on screen that says so.
+                  //
+                  // Taking the larger of the two sides was wrong whenever the
+                  // verdict went against the more numerous one: on a viral
+                  // false claim, six anonymous blogs "supporting" it and two
+                  // credible publishers refuting it yields a `contradicted`
+                  // verdict — and this line reported "6 independent
+                  // publishers", counting the sources the verdict rejected.
+                  const publishers = publishersBackingVerdict(result);
                   return (
                   <>
                     <p className="section-label">
