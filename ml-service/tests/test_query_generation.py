@@ -223,3 +223,55 @@ class TestCollectiveNounsAreNotEntities(unittest.TestCase):
 
     def test_the_real_entity_in_the_claim_survives(self):
         self.assertIn("Amazon", self.entities("Scientists discovered a new species in the Amazon"))
+
+
+class TestEventVocabularyCoverage(unittest.TestCase):
+    """Newsrooms have many ways of saying the same event.
+
+    Found by feeding claims paired with heavily paraphrased coverage: a story
+    headlined "Delhi leader vacates office after party revolt" registered NO
+    event at all against a claim about a prime minister resigning, so nothing
+    about it could match. Multi-word forms are preferred over single ambiguous
+    words — "vacates office" is unmistakable where a bare "vacates" is not.
+    """
+
+    def events(self, text):
+        return events_in(text)
+
+    def test_the_many_ways_of_saying_someone_left_the_job(self):
+        for phrasing in (
+            "The premier stepped aside on Tuesday",
+            "He stands down next month",
+            "The minister vacates office this week",
+            "She left office in September",
+            "The general was relieved of duties",
+            "The chair handed over power on Friday",
+        ):
+            with self.subTest(phrasing=phrasing):
+                self.assertIn("resign", self.events(phrasing))
+
+    def test_the_many_ways_of_reporting_deaths(self):
+        for phrasing in ("Three fatalities were reported",
+                         "Dozens perished in the collapse",
+                         "Several people lost their lives"):
+            with self.subTest(phrasing=phrasing):
+                self.assertIn("die", self.events(phrasing))
+
+    def test_the_many_ways_of_reporting_an_arrest(self):
+        for phrasing in ("Two men were taken into custody",
+                         "The suspect was apprehended overnight"):
+            with self.subTest(phrasing=phrasing):
+                self.assertIn("arrest", self.events(phrasing))
+
+    def test_ambiguous_single_words_are_kept_out(self):
+        """A bare "bar" or "stepped" would match an enormous amount of prose."""
+        for phrasing in (
+            "The bar reopened after renovations",
+            "She stepped into the role last year",
+            "He stepped onto the stage",
+        ):
+            with self.subTest(phrasing=phrasing):
+                self.assertEqual(
+                    self.events(phrasing), set(),
+                    "an ambiguous word must not register as an event",
+                )
