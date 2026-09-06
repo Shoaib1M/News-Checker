@@ -653,6 +653,19 @@ Budget 1GB+ of RAM regardless of choice — PyTorch's own import footprint is 30
 
 The **Binary Truth MLP** (`binary_truth_mlp.py`) is a from-scratch NumPy neural network (no PyTorch/sklearn) trained on the **LIAR dataset** (12,836 labeled political statements), collapsed from 6 classes to binary "Fake-ish"/"True-ish".
 
+> ⚠️ The commonly-cited **72.38%** LIAR result is **leaked**, not merely metadata-dependent. LIAR's credit-history counts include *the current statement's own label*: of the 2,054 speakers appearing exactly once in the dataset, **99.2%** carry exactly one count, sitting in that statement's own label column. The feature partly *is* the target. `build_history_features(..., deleak_labels=...)` subtracts the current row; `tests/test_history_leakage.py` pins both the defect and the fix.
+
+Two models are reported, and the distinction matters more than either number:
+
+| model | inputs | accuracy | 95% CI | precision | F1 |
+|---|---|---|---|---|---|
+| **Claim-only** (ships) | statement text | 61.88% | [59.12, 64.48] | 62.09% | 0.7106 |
+| **+ speaker context** | statement + subject/speaker/job/state/party/context + **de-leaked** history | 64.48% | [61.80, 66.93] | 71.02% | 0.6647 |
+| Majority-class baseline | — | 56.35% | — | — | — |
+
+The first answers *"what can the API do with a claim someone pasted?"* — the only question the product poses, since a pasted claim carries no speaker metadata. The second is the standard LIAR benchmark setup, reported for comparability with published results and **never** as this system's accuracy. Their intervals overlap, so the 2.6-point gap is suggestive rather than established.
+
+Reproduce with `python train_speaker_context_model.py` (no pickle is committed; the model is not shipped).
 
 The production-equivalent, statement-only evaluation:
 
