@@ -22,8 +22,34 @@ import { signToken, requireAuth } from "../middleware/auth.js";
 // Create a new Express Router to organize our routes
 const router = Router();
 
-// Our Google Client ID (from the Google Cloud Console)
+// Our Google Client ID (from the Google Cloud Console).
+//
+// This is a security control, not just configuration. It is passed to
+// verifyIdToken as `audience`, and google-auth-library SKIPS the audience
+// check entirely when that value is undefined:
+//
+//     if (typeof requiredAudience !== 'undefined' && requiredAudience !== null)
+//         ...check aud...                        (oauth2client.js)
+//
+// So with GOOGLE_CLIENT_ID unset, a valid Google ID token issued for ANY
+// other application would be accepted, and whoever holds it signs in as that
+// user. Sign-in appears to work, which is what makes it dangerous.
+//
+// Fail fast in production, the same treatment JWT_SECRET gets in
+// middleware/auth.js; warn in development, where sign-in is often simply not
+// configured.
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+
+if (!GOOGLE_CLIENT_ID) {
+  const message =
+    "GOOGLE_CLIENT_ID is not set. Google sign-in cannot verify which app a " +
+    "token was issued for, so tokens from any Google application would be " +
+    "accepted.";
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(message);
+  }
+  console.warn(`  ⚠  ${message} Sign-in is disabled until it is set.`);
+}
 
 // Initialize the Google OAuth client
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
@@ -49,6 +75,15 @@ router.post("/google", async (req, res) => {
     // Step 1: Validate input
     if (!credential) {
       return res.status(400).json({ error: "Missing Google credential token." });
+    }
+
+    // Refuse rather than verify without an audience. Reaching verifyIdToken
+    // with audience undefined would accept a token minted for any other
+    // Google app.
+    if (!GOOGLE_CLIENT_ID) {
+      return res.status(503).json({
+        error: "Google sign-in is not configured on this server.",
+      });
     }
 
     // Step 2: Verify the token with Google

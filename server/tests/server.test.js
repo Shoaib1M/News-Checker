@@ -240,3 +240,67 @@ describe("statement length", () => {
     assert.equal(upstreamCalled, true);
   });
 });
+
+// ── Google sign-in configuration ─────────────────────────────────────
+describe("google sign-in configuration", () => {
+  /*
+    GOOGLE_CLIENT_ID is a security control, not just configuration. It is
+    passed to verifyIdToken as `audience`, and google-auth-library skips the
+    audience check entirely when that is undefined — so an ID token minted for
+    any other Google application would authenticate. Sign-in appears to work,
+    which is what makes it dangerous.
+  */
+  async function loadAuthRoute(env) {
+    const saved = { ...process.env };
+    Object.assign(process.env, env);
+    delete process.env.GOOGLE_CLIENT_ID;
+    if (env.GOOGLE_CLIENT_ID) process.env.GOOGLE_CLIENT_ID = env.GOOGLE_CLIENT_ID;
+    try {
+      // Cache-bust so module-level checks re-run.
+      return await import(`../routes/auth.js?t=${Date.now()}${Math.random()}`);
+    } finally {
+      for (const key of Object.keys(process.env)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
+  }
+
+  it("refuses to start in production without a client id", async () => {
+    await assert.rejects(
+      () => loadAuthRoute({ NODE_ENV: "production" }),
+      /GOOGLE_CLIENT_ID/,
+      "an unset client id disables audience verification, so production must not boot",
+    );
+  });
+
+  it("still loads in development, for local work without sign-in", async () => {
+    const mod = await loadAuthRoute({ NODE_ENV: "development" });
+    assert.ok(mod.default, "the router must still be importable");
+  });
+
+  it("rejects a sign-in attempt when no client id is configured", async () => {
+    const { default: router } = await loadAuthRoute({ NODE_ENV: "development" });
+    const layer = router.stack.find(
+      (l) => l.route?.path === "/google" && l.route?.methods?.post,
+    );
+    const handler = layer.route.stack[0].handle;
+
+    const res = fakeResponse();
+    await handler({ body: { credential: "any.google.token" }, headers: {} }, res, () => {});
+    assert.equal(res.statusCode, 503, "must refuse, never verify without an audience");
+  });
+
+  it("still rejects a request with no credential at all", async () => {
+    const { default: router } = await loadAuthRoute({
+      NODE_ENV: "development",
+      GOOGLE_CLIENT_ID: "test-client-id.apps.googleusercontent.com",
+    });
+    const layer = router.stack.find(
+      (l) => l.route?.path === "/google" && l.route?.methods?.post,
+    );
+    const handler = layer.route.stack[0].handle;
+
+    const res = fakeResponse();
+    await handler({ body: {}, headers: {} }, res, () => {});
+    assert.equal(res.statusCode, 400);
+  });
+});
