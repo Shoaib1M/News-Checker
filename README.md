@@ -353,7 +353,7 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
   "threshold": 0.49,
   "nli": {
     "enabled": true,
-    "model": "cross-encoder/nli-deberta-v3-small",
+    "model": "cross-encoder/nli-deberta-v3-base",
     "status": "ready",
     "error": null
   },
@@ -434,7 +434,7 @@ All served by `server/` (Express), all under `/api`:
 | Variable | Required? | Default | Notes |
 |---|---|---|---|
 | `NLI_ENABLED` | No | `true` | Set `false` only to intentionally disable NLI (e.g. emergency memory mitigation). |
-| `NLI_MODEL` | No | `cross-encoder/nli-deberta-v3-small` | HuggingFace model id. See [NLI model & memory](#nli-model--memory) before changing this. |
+| `NLI_MODEL` | No | `cross-encoder/nli-deberta-v3-base` | HuggingFace model id. See [NLI model & memory](#nli-model--memory) before changing this. |
 | `GNEWS_API_KEY` | No | — | Enables the GNews provider. Without it, only DuckDuckGo runs. |
 | `GUARDIAN_API_KEY` | No | — | Enables The Guardian provider. |
 | `NEWSAPI_KEY` | No | — | Enables the NewsAPI provider. |
@@ -488,8 +488,10 @@ The first evidence check (a non-deterministic claim) triggers the NLI model down
 ## Testing
 
 ```bash
-# ML service — 93 tests covering claim triage, claim decomposition, relevance
-# and action filtering, query generation, NLI label-mapping safety, evidence
+# ML service — 446 tests covering claim normalisation and triage, claim
+# decomposition, coverage modes and article dating, relevance and action
+# filtering, query generation, numeric-consistency and boilerplate guards,
+# HTML extraction hazards, NLI label-mapping safety, the stance rule, evidence
 # aggregation, absence-of-coverage rules, provider failure/diagnostics
 # handling, keyless-provider parsing, pipeline time budgets, and end-to-end
 # verdict behaviour for every claim shape (tests/test_claim_edge_cases.py).
@@ -603,7 +605,7 @@ npm run lint
 npm run build
 ```
 
-There is currently no automated test suite for `server/` (the Express layer) — this is a known gap, not an oversight; see [Known limitations](#known-limitations).
+`server/` has 24 tests (`cd server && npm test`, Node's built-in runner, no database or network required) covering the auth middleware, history pagination and the `/api/check` proxy's validation and error mapping.
 
 ## Running this for a demo
 
@@ -628,9 +630,20 @@ The root `vercel.json` builds `client/` as a static site and `server/api/index.j
 
 ### NLI model & memory
 
-`NLI_MODEL` defaults to `cross-encoder/nli-deberta-v3-small` (~141M parameters, ~560MB of fp32 weights) for its stronger entailment/contradiction accuracy — the right default for local use, where memory isn't the constraint.
+`NLI_MODEL` defaults to `cross-encoder/nli-deberta-v3-base`. Stance detection decides **every verdict this system produces**, so the larger checkpoint is spent exactly where it pays. This project runs locally, where a few hundred megabytes of weights cost nothing.
 
-If you do deploy this on a small always-on instance (512MB), that model reliably triggers OOM restarts — PyTorch's own import footprint (300–500MB, independent of model choice) plus the model weights adds up fast. In that case, set `NLI_MODEL=cross-encoder/nli-MiniLM2-L6-H768` (~22M parameters, ~6x smaller) instead, and budget for the instance to need 1GB+ regardless of model choice. `-deberta-v3-small`, `-deberta-v3-base`, `-deberta-v3-xsmall`, and `-MiniLM2-L6-H768` are all pre-verified in `nli_service.py`'s label-order table. **If you set a different model entirely**, verify it after deploying:
+Smaller checkpoints are one environment variable away, and all four are pre-verified in `nli_service.py`'s label-order table:
+
+| `NLI_MODEL` | Params | Notes |
+|---|---|---|
+| `cross-encoder/nli-deberta-v3-base` | ~184M | **Default.** Best stance accuracy. |
+| `cross-encoder/nli-deberta-v3-small` | ~141M | Previous default. |
+| `cross-encoder/nli-deberta-v3-xsmall` | ~71M | Faster startup. |
+| `cross-encoder/nli-MiniLM2-L6-H768` | ~22M | Smallest; noticeably weaker. |
+
+Budget 1GB+ of RAM regardless of choice — PyTorch's own import footprint is 300–500MB before any weights load. Whichever you pick, measure it rather than assuming: `python stance_sweep.py --show-errors` scores the checkpoint against a labelled corpus and reports *invented positions* (sources recorded as taking a stance they do not take), which matters more than raw accuracy.
+
+**If you set a model outside the table**, verify it once it loads:
 
 1. Check `/api/health` → `nli.status` should be `"ready"`.
 2. Check the service logs for a line like `NLI model loaded: <model> — id2label={...}` to confirm what label scheme it actually uses.
@@ -646,17 +659,43 @@ The production-equivalent, statement-only evaluation:
 
 | Metric | Value |
 |---|---|
-| Accuracy | 62.35% |
-| Precision | 63.18% |
-| Recall | 79.55% |
-| F1 Score | 0.7043 |
-| Brier score | 0.2262 |
+| Accuracy | **61.88%**  (95% CI 59.12–64.48) |
+| Majority-class baseline | 56.35% |
+| Precision | 62.09% |
+| Recall | 83.05% |
+| F1 Score | 0.7106 |
+| AUC | 0.6722 |
+| Brier score | 0.2277 |
+| Expected calibration error | 0.0458 |
+
+Two things worth reading off that table rather than the accuracy alone.
+
+**The gap is real.** The 95% bootstrap interval's *lower* bound (59.12%) sits
+above the majority-class baseline (56.35%), so the model beats "always answer
+true" by more than split luck. On 1267 rows a point estimate alone could not
+establish that, which is why the interval is reported and not just the number.
+
+**The probability means roughly what it says.** Expected calibration error is
+0.046 — under the ~0.1 threshold beyond which a score should not be shown to a
+user as a confidence. That matters more here than accuracy does, because this
+number is displayed *and* consumed downstream as a prior: a model that is 62%
+accurate while saying "0.9" when it means "0.6" would be worse than a less
+accurate one that knows what it does not know.
+
+Both this and the Model Evaluation page are now scored through
+`make_prediction_features_batch()` — the same function `main.py` calls — so the
+number describes the model as served. It previously did not: `evaluate_models.py`
+fed the shipped model speaker metadata and real credit-history counts it was
+never trained on and reported **56.9%**, while `evaluate_production_model.py`
+transformed the raw statement instead of going through `build_text_input()` and
+reported **62.35%**. Neither was what a request computes.
 
 This model is **never used to determine the final verdict** — see [Design principles](#design-principles). It's kept visible in the API response and on the Model Evaluation/Comparison pages purely for research transparency. Reproduce these numbers with:
 
 ```bash
 cd ml-service
-python evaluate_production_model.py
+python evaluate_production_model.py    # the metrics above
+python evaluate_models.py              # regenerates evaluation_results.json
 ```
 
 ## Project structure
@@ -694,7 +733,7 @@ newschecker/
 │   ├── tfidf.py                    From-scratch TF-IDF vectorizer (feeds the legacy MLP only)
 │   ├── classifier.py / mlp_classifier.py   Experimental baselines, offline evaluation only
 │   ├── evaluate_models.py / evaluate_production_model.py   Offline evaluation scripts
-│   └── tests/                      93 tests across the modules above, incl.
+│   └── tests/                      446 tests across the modules above, incl.
 │                                    test_claim_edge_cases.py (end-to-end verdicts)
 ├── docs/screenshots/              README images
 ├── IMPROVEMENTS.md                 Dated engineering log of major fixes/audits
@@ -705,14 +744,18 @@ newschecker/
 
 Being direct about these matters more than pretending they don't exist:
 
-- **`server/` test coverage is partial.** `npm test` in `server/` runs 17 tests covering the auth middleware, history pagination, and the check proxy's input validation — no database or network needed. The route handlers' database paths are still untested; that would need an in-memory Mongo.
+- **`server/` test coverage is partial.** `npm test` in `server/` runs 24 tests covering the auth middleware, history pagination, and the check proxy's input validation — no database or network needed. The route handlers' database paths are still untested; that would need an in-memory Mongo.
 - **Retrieval quality depends on live web search.** An unconfigured checkout retrieves from Google News RSS, Wikipedia and DuckDuckGo; adding `GNEWS_API_KEY` / `GUARDIAN_API_KEY` / `NEWSAPI_KEY` widens it further. The system is designed to abstain rather than force a weak match — but recall is still bounded by what's configured and reachable at request time, and `GET /api/health` is the place to check which providers are actually live.
 - **Absence-of-coverage is an inference, not a proof.** `unsupported_no_coverage` says the providers we could reach returned nothing asserting the claim. Its guards (salience, candidate volume, non-negation, working NLI, working search) exist to keep it honest, and confidence scales with how much was searched — but a very fresh story, a non-English source, or a story outside the indexed providers can still produce it wrongly. It is deliberately never phrased as "false".
 - **English only.** Claims in other languages are detected and reported as out of scope rather than checked. The detection is a heuristic over character scripts and function words; it can miss a short Latin-script sentence, in which case the claim falls through to the ordinary "no assertion found" path — a worse message, but not a wrong verdict.
 - **Claim triage is heuristic.** `claim_triage.py` classifies by pattern, not by parsing. It handles the shapes in `tests/test_claim_edge_cases.py` — including the traps that broke it during development (factual superlatives read as opinions, irregular past tenses read as non-assertions, pasted links read as claims) — but an unusual phrasing can still land in the wrong bucket. The failure is designed to be safe in one direction: an over-admitted claim gets searched, an over-rejected one refuses to check something real, so the thresholds lean toward admitting.
-- **No temporal-validity checking.** The pipeline doesn't currently compare an article's publish date against the claim's implied timeframe — a stale article about an old event could theoretically be classified as evidence for a claim about current events, if it happens to pass relevance and NLI. This is a known gap, not yet implemented.
+- **Temporal checking is coarse.** The pipeline *does* now compare an article's publish date against the claim's timeframe (see [Coverage modes](#nli-model--memory) — `recent` restricts retrieval to the last 30 days and refuses to let an older article confirm the claim). Three limits remain: providers differ on whether they supply a date at all — Wikipedia and DuckDuckGo supply none, and an undated document is never treated as stale, because deleting real evidence over a missing field is the worse error; the staleness window (45 days) is deliberately wider than the retrieval window, so a document from just outside it still counts; and nothing compares a date against the article's *own* internal timeline, so a recent retrospective about an old event is still readable as current coverage.
 - **Claim decomposition is regex-based, not a real parser.** `claim_decomposer.py` uses pattern matching for entities/predicates/negation/modality, not dependency parsing or a trained NER model. It works well for the claim shapes it's been tested against but isn't as robust as a full NLP pipeline would be.
-- **The legacy MLP is barely better than guessing, and that is the point.** On the LIAR test set it scores **56.9%** against a **56.4%** majority-class baseline — **+0.6 points** over always answering "true". Telling true claims from false ones on text alone, with no evidence, is close to a coin flip. That result is why the architecture is evidence-first and why the verdict never reads the model's output. The Evaluation page states the comparison directly rather than showing the accuracy figure on its own.
+- **The legacy MLP works, and still cannot be a fact-checker.** On the LIAR test set it scores **61.88%** (95% CI 59.12–64.48) against a **56.35%** majority-class baseline. The interval's lower bound clears the baseline, so that +5.5 points is a real effect rather than split luck, and the model is calibrated (ECE 0.046). It is a respectable result for judging a claim from its wording alone.
+
+  It is still not a fact-checker, and the distinction is the architecture's whole premise: 62% on a dated US-political corpus says nothing about whether a specific claim made today is true, because the label is not deducible from the words. Only evidence settles that. So the verdict never reads this model's output — not because the model is weak, but because the task it solves is not the task the user asked. The Evaluation page states the baseline next to the accuracy rather than showing the figure on its own.
+
+  (This number was itself a bug for most of the project's life: the model was scored on speaker metadata it was never trained on, reporting 56.9% — see `IMPROVEMENTS.md` bug 34.)
 
 ## License
 

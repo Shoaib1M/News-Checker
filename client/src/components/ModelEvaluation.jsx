@@ -114,9 +114,9 @@ export default function ModelEvaluation() {
             onClick={() => setSelectedModel(key)}
           >
             {m.name}
-            {/* Not "IN USE": this model ships, but as an advisory prior that
-                the verdict never reads. Badging it "IN USE" next to a 56.9%
-                accuracy invites the reading that the fact-checker is 57%
+            {/* Not "IN USE": this model ships, but as an advisory prior the
+                verdict never reads. Badging it "IN USE" next to any accuracy
+                number invites the reading that the fact-checker is that
                 accurate — and contradicts what every other screen says. */}
             {m.is_production && <span className="eval-prod-badge">SHIPPED AS PRIOR</span>}
           </button>
@@ -245,14 +245,18 @@ PURPOSE: Put an accuracy number next to the score you would get by guessing.
 WHY THIS EXISTS:
 An accuracy figure means nothing without the majority-class baseline beside
 it. On this test set 56.4% of examples fall in the larger binary class, so a
-model that always answered "true" would score 56.4%. Reporting 56.9% without
-that comparison invites the reader to think the model works — and reporting it
-on a fact-checking site invites them to think the SYSTEM is 57% accurate.
+model that always answered "true" would score 56.4%. The model scores 61.9%
+through the inputs it is actually served — a real improvement, and one that is
+only legible next to the baseline.
 
-It is neither. That is precisely why the verdict pipeline is evidence-based
-and does not read this model's output at all. Saying so plainly is a stronger
-position than letting a reader compute the baseline themselves and wonder
-whether anyone noticed.
+The baseline is computed from the dataset's own label distribution rather than
+hardcoded, so it cannot drift from the figures beside it.
+
+Even so, this number is about a claim-only classifier on a dated US-political
+dataset. It is NOT the accuracy of the fact-checker, which is evidence-based
+and does not read this model's output at all. Stating both plainly is a
+stronger position than letting a reader compute the baseline themselves and
+wonder whether anyone noticed.
 */
 function BaselineComparison({ dataset, model }) {
   const distribution = dataset.label_distribution || {};

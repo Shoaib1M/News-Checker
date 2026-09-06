@@ -31,11 +31,10 @@ from classifier import LogisticRegression
 from mlp_classifier import MLPClassifier, LABELS as LABELS_6
 from binary_truth_mlp import (
     BinaryTruthMLP,
-    build_text_input,
-    build_history_features,
+    HISTORY_COLUMNS,
     labels_to_binary,
-    normalize_rows,
     load_artifacts,
+    make_prediction_features_batch,
     MODEL_FILE,
     COLUMNS,
     FAKEISH_LABELS,
@@ -267,19 +266,24 @@ def main():
         bt_model, bt_vectorizer, train_max_values = load_artifacts(MODEL_FILE)
     else:
         print("  No saved model found — training from scratch...")
+        # Statement-only, history zeroed -- identical to binary_truth_mlp.main().
+        # This branch used to train on speaker metadata and real history counts,
+        # producing a DIFFERENT model from the one that ships, so the fallback
+        # silently changed what the comparison page was reporting.
         bt_vectorizer = TFIDFVectorizer()
-        train_text = build_text_input(train_df)
+        train_text = train_df["statement"].fillna("").astype(str)
         bt_vectorizer.build_vocab(train_text)
 
-        X_train_bt = normalize_rows(bt_vectorizer.transform(train_text))
-        X_train_hist, train_max_values = build_history_features(train_df)
-        X_train_bt = np.hstack([X_train_bt, X_train_hist])
+        train_max_values = np.ones((1, len(HISTORY_COLUMNS)))
+        X_train_bt = make_prediction_features_batch(
+            bt_vectorizer, train_max_values, train_text
+        )
         y_train_bt = labels_to_binary(train_df["label"])
 
-        valid_text = build_text_input(valid_df)
-        X_valid_bt = normalize_rows(bt_vectorizer.transform(valid_text))
-        X_valid_hist, _ = build_history_features(valid_df, train_max_values)
-        X_valid_bt = np.hstack([X_valid_bt, X_valid_hist])
+        X_valid_bt = make_prediction_features_batch(
+            bt_vectorizer, train_max_values,
+            valid_df["statement"].fillna("").astype(str),
+        )
         y_valid_bt = labels_to_binary(valid_df["label"])
 
         bt_model = BinaryTruthMLP(
@@ -291,11 +295,15 @@ def main():
         )
         bt_model.fit(X_train_bt, y_train_bt, X_valid_bt, y_valid_bt)
 
-    # Evaluate on test set
-    test_text = build_text_input(test_df)
-    X_test_bt = normalize_rows(bt_vectorizer.transform(test_text))
-    X_test_hist, _ = build_history_features(test_df, train_max_values)
-    X_test_bt = np.hstack([X_test_bt, X_test_hist])
+    # Evaluate on the test set through the SAME feature construction a live
+    # request uses. This block previously built its own features from
+    # build_text_input(test_df) -- statement plus speaker, job, state, party and
+    # context -- with real non-zero history counts, none of which the shipped
+    # model was trained on. It scored 56.9% for a model that gets 61.9% on the
+    # inputs it actually receives.
+    X_test_bt = make_prediction_features_batch(
+        bt_vectorizer, train_max_values, test_df["statement"].fillna("").astype(str)
+    )
     y_test_bt = labels_to_binary(test_df["label"])
 
     bt_scores = bt_model.predict_proba(X_test_bt)
@@ -325,7 +333,7 @@ def main():
         "roc_curve": bt_roc,
         "auc": bt_auc,
         "architecture": "1 hidden layer (64 neurons, ReLU) → sigmoid",
-        "input_features": "TF-IDF bigrams + speaker metadata + history counts",
+        "input_features": "TF-IDF unigrams + bigrams of the statement only",
         "training": "70 epochs, mini-batch SGD (batch=128), threshold-tuned on validation set",
         "classes": "2 (binary)",
         "threshold": round(float(bt_model.best_threshold), 4),

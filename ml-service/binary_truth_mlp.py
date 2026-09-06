@@ -57,18 +57,47 @@ class BinaryTruthMLP:
         epochs=40,
         batch_size=128,
         seed=42,
+        weight_decay=0.0,
+        early_stopping_patience=None,
+        early_stopping_warmup=15,
     ):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.lr = learning_rate
         self.epochs = epochs
         self.batch_size = batch_size
-        
+        # L2 penalty on the weight matrices. 0.0 reproduces the original
+        # behaviour: no regularisation at all, on 26,626 input dimensions and
+        # roughly ten thousand training rows.
+        self.weight_decay = weight_decay
+        # Stop when validation loss has not improved for this many epochs, and
+        # restore the best weights seen. None runs every epoch regardless of
+        # what validation is doing.
+        self.early_stopping_patience = early_stopping_patience
+        # Epochs before stopping may fire at all. This network starts almost
+        # flat — inputs are L2-normalised sparse rows (~24 non-zeros of
+        # 26,626), so He initialisation scaled for dense inputs gives hidden
+        # activations around 0.004 and outputs in 0.4957-0.5056. Validation
+        # loss therefore sits at ln(2) for the first several epochs while the
+        # weights climb out, and patience counted that flat stretch as "no
+        # improvement": hidden_size 32 and 128 both stopped around epoch 11
+        # and scored EXACTLY the majority-class baseline, 0.5202, having
+        # learned nothing. A warmup makes stopping mean "stopped improving"
+        # rather than "has not started yet".
+        self.early_stopping_warmup = early_stopping_warmup
+
         # The threshold determines where we draw the line between False and True.
         # It defaults to 0.5 (50%), but we "tune" it during training to find the best cutoff.
         self.best_threshold = 0.5
 
+        # One generator for BOTH weight init and batch shuffling. The shuffle
+        # used np.random.permutation — the global RNG — so `seed` controlled
+        # only the initial weights and every run trained on a different batch
+        # order. Two runs of the same configuration could differ by more than
+        # the effects being measured, which makes an experiment unreadable and
+        # contradicts the README's "reproduce these numbers with".
         rng = np.random.default_rng(seed)
+        self._rng = rng
         
         # Layer 1 (Input -> Hidden)
         self.W1 = rng.normal(0, np.sqrt(2 / input_size), (input_size, hidden_size))
@@ -111,11 +140,19 @@ class BinaryTruthMLP:
             (1 - actual) * np.log(1 - predicted)
         )
 
-    def fit(self, X, y, X_valid=None, y_valid=None):
+    def fit(self, X, y, X_valid=None, y_valid=None, quiet=False):
         n_samples = X.shape[0]
+        # Stopping is driven by validation LOSS, not accuracy: accuracy
+        # moves in discrete jumps on 1284 rows, so a plateau looks like
+        # an improvement. Loss is continuous and registers growing
+        # overconfidence before any label actually flips.
+        best_valid_loss = None
+        rounds_without_improvement = 0
+        best_weights = None
+        valid_loss = None
 
         for epoch in range(1, self.epochs + 1):
-            indices = np.random.permutation(n_samples)
+            indices = self._rng.permutation(n_samples)
             X_shuffled = X[indices]
             y_shuffled = y[indices].reshape(-1, 1)
 
@@ -140,10 +177,44 @@ class BinaryTruthMLP:
                 db1 = np.sum(dz1, axis=0, keepdims=True)
 
                 # --- UPDATE WEIGHTS ---
+                # Weight decay is applied to the weight matrices only, never
+                # the biases: penalising a bias just shifts the decision
+                # boundary without reducing model capacity.
+                if self.weight_decay:
+                    dW2 = dW2 + self.weight_decay * self.W2
+                    dW1 = dW1 + self.weight_decay * self.W1
                 self.W2 -= self.lr * dW2
                 self.b2 -= self.lr * db2
                 self.W1 -= self.lr * dW1
                 self.b1 -= self.lr * db1
+
+            # Early stopping needs the VALIDATION loss every epoch. It does
+            # not need the training-set forward pass that reporting does, and
+            # on 10,240 rows by 26,626 features that pass costs more than the
+            # epoch itself — forcing the whole reporting block every epoch to
+            # get this check roughly tripled training time.
+            if (self.early_stopping_patience is not None
+                    and X_valid is not None and y_valid is not None):
+                epoch_valid_loss = self.loss(self.predict_proba(X_valid), y_valid)
+                if best_valid_loss is None or epoch_valid_loss < best_valid_loss - 1e-5:
+                    best_valid_loss = epoch_valid_loss
+                    rounds_without_improvement = 0
+                    best_weights = (self.W1.copy(), self.b1.copy(),
+                                    self.W2.copy(), self.b2.copy())
+                else:
+                    rounds_without_improvement += 1
+                # The warmup gates the STOP decision, not the tracking. An
+                # earlier version skipped this whole block during warmup, which
+                # also meant no weights were recorded — so a run whose best
+                # model arrived inside the warmup window (lr 0.5 peaks around
+                # epoch 15) would have thrown it away and kept a later, worse
+                # one. Track always; refuse to stop early.
+                if (epoch > self.early_stopping_warmup
+                        and rounds_without_improvement >= self.early_stopping_patience):
+                    if not quiet:
+                        print(f"  early stop at epoch {epoch} "
+                              f"(best valid loss {best_valid_loss:.4f})")
+                    break
 
             # Reporting
             should_report = epoch == 1 or epoch % 5 == 0
@@ -168,7 +239,13 @@ class BinaryTruthMLP:
                         f"threshold: {valid_threshold:.2f}"
                     )
 
-                print(message)
+                if not quiet:
+                    print(message)
+
+        # Restore the weights that generalised best, not the ones the last
+        # epoch happened to leave behind.
+        if best_weights is not None:
+            self.W1, self.b1, self.W2, self.b2 = best_weights
 
         # After training finishes, find the absolute best cutoff line based on validation data
         if X_valid is not None and y_valid is not None:
@@ -328,6 +405,49 @@ def load_artifacts(path):
 """
 PURPOSE: Core function used by `main.py` to turn raw text into model-ready numbers.
 """
+def make_prediction_features_batch(
+    vectorizer,
+    train_max_values,
+    statements,
+    **metadata,
+):
+    """Features for many statements, built exactly as a live request builds them.
+
+    WHY THIS EXISTS:
+    Evaluation used to construct its own features. `evaluate_models.py` loaded
+    the shipped model and then scored it on `build_text_input(test_df)` — the
+    statement PLUS subject, speaker, job, state, party and context — with real
+    non-zero history counts. The shipped model is trained statement-only with
+    history zeroed (see `main()` below), so it was being measured on a
+    distribution it had never seen, and reported **56.9%** for a model that
+    scores **61.9%** on the inputs it actually receives.
+
+    Everything that scores this model now goes through here, so evaluation and
+    serving cannot drift apart again. Any metadata a caller does not supply
+    defaults to the blank/zero value the API sends.
+    """
+    rows = []
+    for statement in statements:
+        row = {"statement": statement}
+        for column in TEXT_FEATURE_COLUMNS:
+            if column != "statement":
+                row[column] = metadata.get(column, "")
+        for column in HISTORY_COLUMNS:
+            row[column] = metadata.get(column, 0)
+        rows.append(row)
+
+    frame = pd.DataFrame(rows)
+
+    # 1. Process Text
+    text_features = normalize_rows(vectorizer.transform(build_text_input(frame)))
+
+    # 2. Process History
+    history_features, _ = build_history_features(frame, train_max_values)
+
+    # 3. Glue them together side-by-side
+    return np.hstack([text_features, history_features])
+
+
 def make_prediction_features(
     vectorizer,
     train_max_values,
@@ -344,31 +464,23 @@ def make_prediction_features(
     mostly_true=0,
     pants_fire=0,
 ):
-    # Pack it into a 1-row DataFrame so our builder functions work normally
-    row = pd.DataFrame([{
-        "statement": statement,
-        "subject": subject,
-        "speaker": speaker,
-        "job": job,
-        "state": state,
-        "party": party,
-        "context": context,
-        "barely_true": barely_true,
-        "false": false,
-        "half_true": half_true,
-        "mostly_true": mostly_true,
-        "pants_fire": pants_fire,
-    }])
-
-    # 1. Process Text
-    text = build_text_input(row)
-    text_features = normalize_rows(vectorizer.transform(text))
-    
-    # 2. Process History
-    history_features, _ = build_history_features(row, train_max_values)
-    
-    # 3. Glue them together side-by-side
-    return np.hstack([text_features, history_features])
+    """One statement's features. Delegates so there is a single code path."""
+    return make_prediction_features_batch(
+        vectorizer,
+        train_max_values,
+        [statement],
+        subject=subject,
+        speaker=speaker,
+        job=job,
+        state=state,
+        party=party,
+        context=context,
+        barely_true=barely_true,
+        false=false,
+        half_true=half_true,
+        mostly_true=mostly_true,
+        pants_fire=pants_fire,
+    )
 
 
 def predict_statement(model, vectorizer, train_max_values, statement, **metadata):

@@ -81,8 +81,22 @@ class TFIDFVectorizer:
             for token in tokens:
                 doc_frequency[token] = doc_frequency.get(token, 0) + 1
 
-        # Step 2: Calculate the IDF score for tokens that meet the minimum frequency
-        for token, count in doc_frequency.items():
+        # Step 2: Calculate the IDF score for tokens that meet the minimum
+        # frequency.
+        #
+        # SORTED, and that matters. Step 1 iterates a set of strings, and
+        # Python randomises string hashing per process, so the insertion order
+        # of `doc_frequency` differs between runs. Assigning column indices in
+        # that order gave every token a different column each time the
+        # vocabulary was built — the feature matrix was column-permuted per
+        # process, seeded weights lined up against different tokens, and two
+        # runs of an identical configuration produced different models.
+        #
+        # It was invisible in-process (one interpreter, one hash seed) and only
+        # showed up as the same variant scoring 0.6402 and then 0.6379 across
+        # two invocations of the experiment sweep. Sorting gives a canonical
+        # column order that does not depend on the run.
+        for token, count in sorted(doc_frequency.items()):
             if count >= self.min_df:
                 # Assign this token a permanent index/column in our vectors
                 self.vocab[token] = self.vocab_size

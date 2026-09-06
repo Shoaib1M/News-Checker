@@ -1150,3 +1150,289 @@ benchmark's own bugs:
 
 A headline that cannot be corrupted cleanly is **skipped**. Losing a sample
 costs a little statistical power; mangling one costs the number's meaning.
+
+### Bug 34 — the model was being measured on inputs it was never trained on
+
+`binary_truth_mlp.py`, `evaluate_models.py`, `evaluate_production_model.py`
+
+The shipped model is trained **statement-only**, with the five credit-history
+columns forced to zero (`binary_truth_mlp.main()`):
+
+```python
+train_text = train_df["statement"].fillna("").astype(str)          # no metadata
+X_train_history = build_history_features(
+    train_df.assign(**{c: 0 for c in HISTORY_COLUMNS}))            # all zeros
+```
+
+`evaluate_models.py` then **loaded that model** and scored it on
+`build_text_input(test_df)` — statement *plus* subject, speaker, job, state,
+party and context — with real non-zero history counts. It was measured on a
+distribution it had never seen, and that number went straight to the frontend's
+Model Evaluation page.
+
+A second, subtler copy of the same bug lived in `evaluate_production_model.py`,
+whose comment claimed it "precisely mirrors main.py" while transforming the raw
+statement — `main.py` goes through `build_text_input()`, which prepends
+column-name tokens and creates boundary bigrams.
+
+| Scored as | Accuracy | AUC |
+|---|---|---|
+| Published on the site (metadata + real history) | 0.5691 | 0.6097 |
+| `evaluate_production_model.py` (raw statement) | 0.6235 | — |
+| **Through the path a request actually takes** | **0.6188** | **0.6722** |
+| Majority-class baseline | 0.5635 | — |
+
+The project was under-reporting its own model by **5 points of accuracy and
+6 points of AUC**. The threshold (0.49) is chosen on `valid.tsv`, not test, so
+the corrected figure carries no leakage.
+
+**The fix is structural, not arithmetic.** `make_prediction_features_batch()`
+is now the single feature construction, and `make_prediction_features()` — the
+function `main.py` calls — delegates to it. Every evaluator goes through it, so
+evaluation cannot drift from serving again. Two drift tests enforce it: one
+asserts the single-row form delegates rather than rebuilding features, another
+that neither evaluator constructs its own.
+
+The first version of that drift test matched the explanatory *comment*
+describing the bug and so passed on prose; it now strips comments before
+scanning.
+
+The from-scratch fallback branch in `evaluate_models.py` had the same defect in
+the other direction — it trained on metadata and history, producing a
+*different* model from the one that ships. It now mirrors `main()`.
+
+### NLI default raised to `deberta-v3-base`
+
+`nli_service.py`, `Dockerfile`, `README.md`
+
+Stance detection decides every verdict this system produces, and the default
+checkpoint was chosen under a 512MB deployment constraint that no longer
+applies. The default is now `cross-encoder/nli-deberta-v3-base` (~184M params),
+whose indexed label order was already registered and verified in
+`_KNOWN_INDEXED_LABEL_ORDERS`. The three smaller checkpoints remain one
+environment variable away and are documented with their sizes.
+
+**Not verified here:** the sandbox is blocked from `huggingface.co` (403 on
+CONNECT), so the new default could not be downloaded or benchmarked from this
+environment. It is the same family and label scheme as the previous default,
+and a load failure is non-fatal by design (the service abstains rather than
+crashing) — but the checkpoint should be confirmed on first run via
+`/api/health` → `nli.status`, and compared against the old one with
+`python stance_sweep.py --show-errors`.
+
+### Bug 35 — a malformed search hint rejected the whole fact-check
+
+`main.py`
+
+`resolve_mode()` has always normalised an unrecognised mode to `auto`. A
+`pattern="^(auto|recent|historical)$"` constraint on `CheckRequest.mode` made
+that fallback unreachable: an unknown value was refused with a raw Pydantic 422
+before any logic ran.
+
+```
+mode="sideways"  ->  HTTP 422  string_pattern_mismatch
+mode=""          ->  HTTP 422  string_pattern_mismatch
+mode="RECENT"    ->  HTTP 422  string_pattern_mismatch
+```
+
+It also disagreed with the Express proxy, which coerces unknown modes to
+`auto` — so the same request succeeded through the UI and failed against the
+API directly. `mode` is a **search hint with a safe default**; refusing to check
+a claim because the hint was malformed is the wrong trade, and it is the same
+class of bug as the over-long statement that used to return a raw 422 wrapped
+as a 502.
+
+The constraint is gone; values outside the set are normalised, case included.
+A drift test asserts no pattern has been re-added — verified to fail when one
+is, along with two behavioural tests.
+
+### Documentation drift found by sweeping for stale figures
+
+`README.md`
+
+Correcting the model number surfaced four claims the README was making that the
+code had outgrown:
+
+- **"No temporal-validity checking … a known gap, not yet implemented."** It
+  *is* implemented — coverage modes, provider date filters and the staleness
+  guard. The bullet now describes what actually happens and the three real
+  limits that remain (providers that supply no date, the deliberately generous
+  45-day window, and no comparison against an article's own internal timeline).
+- **"The legacy MLP is barely better than guessing … +0.6 points."** It is
+  +5.5 points with a confidence interval clearing the baseline. The conclusion
+  (evidence-first) survives, but for a better reason: not that the model is
+  weak, but that judging a claim from its wording is not the task the user
+  asked, however well it is done.
+- **"There is currently no automated test suite for `server/`."** There are 24.
+- **"93 tests"** for `ml-service`, in two places. There are 446.
+
+A number in prose has no drift guard, which is why the sweep was worth doing.
+The figures that *do* have guards — the response schema, the non-numeric
+statuses, the stance rule, the evaluation feature path — are the ones that
+have stayed correct.
+
+### Bug 36 — training was not reproducible
+
+`binary_truth_mlp.py`
+
+`__init__` seeded a generator for the initial weights, but the per-epoch
+shuffle used `np.random.permutation` — the **global** RNG. So `seed` controlled
+only where training started, and two runs of the same configuration trained on
+different batch orders and produced different models. The README told readers
+to "reproduce these numbers"; they could not, and no experiment comparing
+configurations could be read, because runs differed by more than the effects
+being measured.
+
+One generator now drives both weight initialisation and shuffling. A test
+seeds numpy globally to two different values between runs and asserts the model
+is unchanged.
+
+### Regularisation and early stopping, as opt-in knobs
+
+`binary_truth_mlp.py`
+
+The training loop had neither, on 26,626 input dimensions over ~10,240 rows,
+and kept whatever weights the final epoch happened to leave behind.
+
+- `weight_decay` applies L2 to the weight matrices only — penalising a bias
+  shifts the decision boundary without reducing capacity, and a test asserts
+  the update touches `W1`/`W2` and not `b1`/`b2`.
+- `early_stopping_patience` stops on validation **loss**, not accuracy:
+  accuracy moves in discrete jumps on 1284 rows, so a plateau reads as an
+  improvement, while loss registers growing overconfidence before any label
+  flips. The best weights seen in the run are restored.
+
+Both default to off, so the shipped model's behaviour is unchanged until an
+experiment turns them on.
+
+**A performance bug in the first version of this:** enabling early stopping
+forced the whole reporting block every epoch, which includes a forward pass
+over the *training* set — on 10,240 × 26,626 that pass costs more than the
+epoch, and it roughly tripled training time. Early stopping needs only the
+validation loss; separating the two brought the overhead down to ~22%.
+
+**A wrong test, corrected:** the first version asserted that an early-stopped
+model beats one trained longer. It failed by 0.0005, and it deserved to —
+that is not what early stopping promises. Patience can halt on a noisy dip the
+longer run later climbs out of. The guarantee is within-run: the weights left
+behind are the best ones *that run* saw. The test now records validation loss
+each epoch and asserts the final model matches the minimum.
+
+### `train_experiments.py` — choosing a model without cheating
+
+New. Trains variants of the MLP and picks one under a rule the script enforces:
+**variants are selected on VALIDATION; the test set is touched once, by the
+winner, at the end.**
+
+Running six variants and shipping whichever scored best on test is overfitting
+the test set with extra steps — the reported number would describe the sweep
+rather than the model. A variant also only displaces the incumbent if it clears
+the incumbent's validation confidence interval; anything inside it is noise,
+and swapping models on noise means retraining forever while the number wanders.
+
+### Bug 37 — the vocabulary's column order depended on the process
+
+`tfidf.py`
+
+`build_vocab` counted document frequencies by iterating a `set` of token
+**strings**:
+
+```python
+tokens = set(self.get_ngrams(words))     # set of strings
+for token in tokens:
+    doc_frequency[token] = doc_frequency.get(token, 0) + 1
+```
+
+Python randomises string hashing per process, so the insertion order of
+`doc_frequency` differed between runs — and step 2 assigned each token its
+column index in exactly that order. **The feature matrix was column-permuted
+per process.** Seeded weight initialisation therefore lined up against
+different tokens each run, and an identical training configuration trained into
+a different model.
+
+The cost was not a wrong answer but an unmeasurable one. It surfaced only when
+the experiment sweep scored the same variant **0.6402** in one invocation and
+**0.6379** in the next — a spread larger than most of the effects the sweep
+exists to detect. Every comparison it had made was unreadable.
+
+It was invisible from inside a single interpreter, which is why the
+reproducibility test added alongside the RNG fix (bug 36) passed while this was
+still live: one process, one hash seed, one column order.
+`tests/test_vectorizer_determinism.py` therefore runs the vectorizer — and a
+small training run — in **separate interpreters under different
+`PYTHONHASHSEED` values**, which is the only way to see it.
+
+Fixed by assigning indices in sorted order, giving a canonical column layout
+that does not depend on the run.
+
+The shipped `binary_truth_mlp.pkl` is unaffected: it carries its own saved
+vocabulary and still scores 0.6188. It is simply one draw from the old
+non-deterministic ordering — a freshly trained baseline now scores 0.6243 on
+test, comfortably inside its interval.
+
+### Bug 38 — early stopping produced degenerate models
+
+`binary_truth_mlp.py`
+
+The network starts almost flat. Inputs are L2-normalised sparse rows — about
+**24 non-zeros out of 26,626** — so He initialisation scaled for dense inputs
+leaves hidden activations near **0.004** and outputs in **0.4957–0.5056**.
+Validation loss therefore sits at ln(2) ≈ 0.693 for the first several epochs
+while the weights climb out.
+
+Patience counted that flat stretch as "no improvement". In the sweep, both
+`hidden 32` and `hidden 128` halted around epoch 11 and scored **exactly**
+0.5202 — the majority-class baseline, threshold 0.30. Two different
+architectures, identical to four decimals, because both had learned nothing.
+They were reported as measurements.
+
+A warmup now gates stopping, so it means "stopped improving" rather than "has
+not started yet". After the fix the same variants score 0.6269 and 0.6285.
+
+**A second fault in the first version of the fix:** it skipped the whole block
+during warmup, which also meant no best-weights were recorded. A run whose best
+model arrived inside the warmup window — `lr 0.5` peaks around epoch 15 — would
+have discarded it and kept a later, worse one. The warmup gates the *stop
+decision* only; tracking runs from epoch one.
+
+### The sweep result: the shipped configuration survives
+
+`train_experiments.py`, 9 variants, selection on validation, test touched once.
+
+| variant | valid acc | 95% CI |
+|---|---|---|
+| min_df 3 + early stop | 0.6386 | [0.6114, 0.6643] |
+| min_df 3 + lr 0.5 + stop | 0.6355 | [0.6098, 0.6597] |
+| lr 0.5 + early stop | 0.6332 | [0.6075, 0.6597] |
+| **baseline (shipped)** | **0.6324** | **[0.6067, 0.6573]** |
+| lr 0.25 + early stop | 0.6316 | [0.6051, 0.6573] |
+| early stopping | 0.6285 | [0.6020, 0.6534] |
+| hidden 128 + early stop | 0.6285 | [0.6028, 0.6542] |
+| hidden 32 + early stop | 0.6269 | [0.5996, 0.6519] |
+| lr 0.5 (no stopping) | 0.6215 | [0.5950, 0.6480] |
+
+**Nothing clears the incumbent's interval.** Every variant lands within 1.7
+points of every other, on intervals ±2.5 points wide. The leader beats the
+incumbent by 0.6 points — well inside noise, and with nine variants the maximum
+drifts upward by multiple comparisons alone. The shipped model stays, and the
+held-out figure stands at **0.6188**.
+
+That is a result, not a failed run: the configuration was checked against eight
+alternatives rather than chosen once and left.
+
+**Two real findings underneath the flat table:**
+
+- **The learning rate is roughly 10× too small for how the inputs are scaled.**
+  At the shipped `lr=0.05`, validation loss after 15 epochs is still 0.6913 —
+  essentially ln(2) — with an output spread of 0.057. At `lr=0.5` the same 15
+  epochs reach 0.6332 with a spread of 0.642. Paired with early stopping it
+  matches the incumbent's accuracy in **107s against 227s**. Not an accuracy
+  win; a training-time win of more than half, and an explanation of why 70
+  epochs were needed.
+- **42% of the vocabulary is dead weight.** `min_df 3` cuts it from 26,626 to
+  15,520 features and scores *higher* than the incumbent (inside noise). The
+  terms appearing in one or two documents contribute nothing but capacity to
+  overfit.
+
+Neither is worth shipping on its own evidence. Both are worth knowing, and both
+point the same way: this model's ceiling is the task, not the tuning.
