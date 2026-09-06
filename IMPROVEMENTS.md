@@ -589,3 +589,129 @@ investigation missed:
 - **Not verified here:** live reachability of Google News RSS and Wikipedia.
   The sandbox proxy blocks both hosts, so only their parsers are tested,
   against real payload shapes. `GET /api/health` reports live provider state.
+
+---
+
+## 2026-09-06 — Bug hunt: probing each stage instead of reading it
+
+### The instruction
+
+> "Go through the entire codebase and keep testing for bugs where there could
+> be an error or a wrong answer for a claim entered by a user, and keep fixing
+> it... keep turning the params again and again of the web scraping and the
+> stance part."
+
+### Method
+
+Every finding below came from *running* a stage against hand-built inputs and
+reading what came out — not from reading the code. Several of these had been
+read past repeatedly, including by me.
+
+### The five that inverted or destroyed the answer
+
+**1. A fact-check counted as evidence FOR the claim it debunks.** A debunking
+article quotes the claim it refutes — "Posts claim the United States banned
+Google in all its cities" — which NLI scores as strong entailment, because the
+claim is in the sentence. The code found the passage with the highest
+`max(entail, contradict)` and read *both* scores off it. The quote (0.88) beat
+the refutation (0.80), its near-zero contradiction score came with it, and a
+PolitiFact article was recorded as supporting the claim at 0.95 source weight
+— enough on its own to carry a verdict.
+
+**2. Credible sources were never read.** Only the top eight candidates by
+lexical relevance are classified. That is backwards for a viral claim: the
+posts repeating it use its exact wording, the debunkings do not. Measured on a
+realistic pool — eight rumour blogs at 0.78–0.94, a PolitiFact fact-check at
+0.735. It ranked *ninth*.
+
+**3. Claim splitting deleted the subject.** "The U.S. government banned Google
+across all cities" became "government banned Google across all cities". No
+abbreviation handling, and short fragments discarded rather than aborting the
+split. This happens before anything is searched, so every later stage was
+working on a claim the user never made.
+
+**4. The deterministic layer answered the wrong question at "very high"
+confidence.** "It is false that a triangle has four sides" — a true statement —
+came back *false*. "Nobody claims WWII ended in 1945" — a false statement —
+came back *true*. That layer skips retrieval and NLI entirely, so nothing
+downstream can correct it.
+
+**5. GOOGLE_CLIENT_ID unset was an auth bypass.** It is passed to
+`verifyIdToken` as `audience`, and google-auth-library skips the audience check
+entirely when that is undefined (`oauth2client.js:738`). A Google ID token
+minted for any other application would authenticate — and sign-in appears to
+work, which is what makes it dangerous rather than merely broken.
+
+### Retrieval
+
+None of the four dispatched queries contained the claim's verb — for "the
+prime minister of India resigned this morning", two of the four were built on
+"morning". NLI saw only an article's first sentences, so a story reporting a
+resignation in its eighth sentence arrived as six sentences about the weather.
+Deduplication merged "must be banned" with "must **not** be banned" (0.92
+Jaccard). The keyed providers' articles were never fetched, because their
+31-word excerpt sat just above a 30-word threshold. Every DuckDuckGo result had
+an empty snippet. The pronoun "us" matched the United States while "Indian" did
+not match India. A headline's own dash clause became a publisher identity and
+inflated the independence count.
+
+### Stance
+
+The verdict was not monotonic: one Reuters article entailing at 0.93 gave
+`supported`, and adding three articles that said nothing either way gave
+`insufficient_evidence`. "Mixed" fired on raw counts, so five strong reports
+tied with one 0.40 blog. Independence was documented but never applied — four
+copies of one wire story counted as four confirmations at high confidence.
+
+### Tuning, measured
+
+Built a twenty-pair labelled corpus and swept the relevance threshold:
+
+    0.30-0.48   precision 0.91   recall 1.00   F1 0.95   <- current
+    0.50+       precision 1.00   recall 0.80   F1 0.89
+
+**Left it alone.** Raising it buys one point of precision for two genuinely
+relevant articles, and the costs are not symmetric: a rejected document is
+gone, and enough wrong rejections become "no credible source reports this" — a
+statement about the world. The one surviving false positive scores
+*identically* to a true positive on all five dimensions; no threshold separates
+them, and tuning further would only overfit. That reasoning now sits next to
+the constants.
+
+### What the fixes compose to
+
+`tests/test_misinformation_scenario.py`, on a viral false claim with eight
+rumour posts and two credible refutations:
+
+    VERDICT : evidence contradicts the claim | medium confidence
+    supporting 6 (unclassified) · contradicting 2 (politifact, reuters)
+
+Six sources "support" the claim and the verdict is `contradicted`.
+
+### A duplicated rule that drifted three times
+
+The same rule existed in two places and the copies diverged, three separate
+times: the subjective-superlative pattern (claim_triage *and*
+knowledge_verifier, so fixing one changed nothing), the independent-publisher
+count, and the list of outcomes that must not show a number — which is why a
+saved check of "asdkjh asdkjh" appeared in the history list as an amber **50**.
+Each is now one module with a test asserting the copies match.
+
+### A crash I shipped, and the gap it revealed
+
+Adding an icon without importing it blanked *every* route. `npm run build` and
+`eslint --max-warnings=0` both returned 0: Vite does not resolve names at build
+time and the lint config does not flag it in JSX. Only rendering caught it.
+`npm run smoke` now loads every route and fails on any runtime error; verified
+against that exact bug.
+
+### Verification
+
+254 ml-service tests (98 at the start of this round), 24 server tests closing
+the README's "biggest remaining gap", render smoke test over four routes, and
+`verdict_sweep.py` across 25 claim shapes. Worst-case timing re-measured after
+the provider count doubled: 30s against a 45s budget with everything hanging,
+reported as `SEARCH_FAILED` so absence reasoning stays blocked.
+
+**Not verified:** live reachability of any provider. The sandbox proxy blocks
+them, so only the parsers are tested, against real payload shapes.
