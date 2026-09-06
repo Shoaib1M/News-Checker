@@ -483,6 +483,39 @@
 .breakdown-item-muted { opacity: 0.55; }
 .breakdown-item-muted .breakdown-bar-fill { background: var(--gray-400); }
 
+/* Accuracy-vs-baseline card on the evaluation page. Neutral styling on
+   purpose: this is a caveat, not a headline metric. */
+.eval-baseline-card {
+  margin: 0.9rem 0 1.4rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--gray-200);
+  border-radius: 10px;
+  background: var(--gray-50, #fafafa);
+}
+
+.eval-baseline-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  font-size: 0.8rem;
+  color: var(--gray-600);
+  padding: 0.15rem 0;
+}
+
+.eval-baseline-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--gray-700);
+}
+
+.eval-baseline-note {
+  margin: 0.55rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--gray-500);
+}
+
 /* Loading status line — elapsed time plus, after a threshold, why the wait
    is long. Muted so it sits under the skeleton rather than competing. */
 .skeleton-status {
