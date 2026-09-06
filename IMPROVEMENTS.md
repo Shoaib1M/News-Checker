@@ -1068,3 +1068,85 @@ missing from `routes/check.js`, `models/Check.js` and the history mapper in
 The result panel also states which slice was searched and why — *"Searched the
 last 30 days — it was submitted as BREAKING"* — and says so when sources were
 found but set aside as too old.
+
+### Bug 33 — nineteen of twenty ordinary news verbs were invisible
+
+`event_vocabulary.py`
+
+The event vocabulary drives **both** query generation and relevance scoring, so
+a verb missing from it is a claim the system cannot search for *and* cannot
+recognise coverage of. Measured against twenty ordinary headlines, **nineteen
+registered no event at all**:
+
+```
+MISS  The central bank raised interest rates        expected=increase  got=[]
+MISS  The minister was sacked after the vote        expected=resign    got=[]
+MISS  Parliament repealed the surveillance law      expected=reject    got=[]
+MISS  The court upheld the ban                      expected=approve   got=['ban']
+MISS  The storm devastated the coastal towns        expected=invade    got=[]
+...   19/20 common news events unrecognised
+```
+
+Rate rises, cabinet sackings, repeals, recalls and evacuations are not edge
+cases — they are most of a news cycle, which is exactly the complaint that
+started this: results on today's news were thin.
+
+Added: `raise/hike/soar/spike` to increase; `lower/slash/plunge/tumble/reduce/
+halve` to decrease; `repeal/overturn/withdraw/scrap/quash/revoke` to reject;
+`uphold/ratify/pardon/authorise/greenlight` to approve; `recall/halt/suspend/
+cease` to close; `sacked/dismissed/axed/was fired` to resign; `clinch` to
+elect; and a new **disaster** family (earthquake, flood, wildfire, hurricane,
+tsunami, landslide, eruption, derailed, devastate, evacuate) which had no
+representation at all.
+
+**Two candidates were tried and removed.** `jump` and `climb` matched *"the
+children jumped into the lake"* and *"he climbed the stairs"*, and
+soar/surge/rise already cover the sense — the same reasoning that keeps bare
+"up" and "down" out. A bare `fired` was excluded too: police fire tear gas and
+rifles are fired, so only `was fired` / `were fired` count as a dismissal.
+Negative controls are pinned alongside the positives.
+
+### The accuracy number — `news_benchmark.py`
+
+There was no answer to "how accurate is it?". The LIAR figure (56.9% against a
+56.4% majority class) measures a model that ships only as a prior and says
+nothing about the pipeline that actually decides verdicts.
+
+There is no labelled corpus of today's news and there cannot be — labelling it
+is the task. So the benchmark builds one: **today's real headlines are the
+positive class**, and **corrupted versions of them are the negative class**
+(antonym swap, changed figure, negation). Triage drops questions, opinion
+pieces and listicles first, since scoring the system on non-assertions measures
+nothing.
+
+The report states its own weaknesses, because they change what the number
+means. A headline is "reported", not "true". The positive cases are partly
+self-confirming — the headlines come from the same indexes the system searches.
+Corrupted headlines are not real misinformation, which is built to be plausible
+and often carries supporting coverage. So the two directions are **never
+averaged into one "accuracy"**, and a test asserts the summary contains no such
+key.
+
+**The number worth quoting is the wrong-answer rate**: how often the system
+stated something confidently false. Missing a true claim is a shortfall;
+asserting a false one is the failure a fact-checker must not make.
+
+**Running it end to end against stubbed retrieval found four defects in the
+corrupter itself**, each of which would have blamed the pipeline for the
+benchmark's own bugs:
+
+- *"The central bank lower interest rates"* — the antonym was substituted in
+  base form regardless of tense. A system asked to rule on a broken sentence is
+  being tested on its parser.
+- *"India's PM resigned after coalition talks launch"* — an arbitrary event
+  anywhere in the headline was flipped, so a subordinate clause changed and the
+  claim stayed substantially **true**. Only the headline's first (main) event
+  is eligible now, and a headline whose main event has no antonym is skipped.
+- *"Regulators repealed the merger"* — grammatical but odd, because the antonym
+  family's first entry won instead of its canonical verb.
+- *"A magnitude 7 did not earthquake struck northern Japan"* — negation applied
+  to a noun. It now requires an inflected verb, and every generated stem is
+  checked against the vocabulary rather than guessed.
+
+A headline that cannot be corrupted cleanly is **skipped**. Losing a sample
+costs a little statistical power; mangling one costs the number's meaning.
