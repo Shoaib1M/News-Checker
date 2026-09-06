@@ -498,11 +498,35 @@ pip install -r requirements.txt
 python -m pytest tests/ -q
 # (falls back to: python -m unittest discover -s tests -v)
 
-# The provider tests verify PARSING against real payload shapes; they make no
-# network calls, so they do not prove either endpoint is reachable from a
-# given machine. To check reachability:
-#   python -c "from providers.google_news import search; print(len(search('test')))"
-#   python -c "from providers.wikipedia import search; print(len(search('Eiffel Tower')))"
+# Provider coverage comes in three layers, and it is worth knowing which one
+# answers which question:
+#
+#   tests/test_keyless_providers.py    parsing, against captured payload shapes
+#   tests/test_provider_live_path.py   the real fetch — a genuine socket, real
+#                                      HTTP, real headers and decoding, served
+#                                      from 127.0.0.1
+#   check_providers.py                 the live internet: is the host reachable
+#                                      from HERE, is my API key valid, am I
+#                                      being rate-limited
+#
+# Only the last one can answer the questions that actually ruin a demo, and no
+# offline test ever will. Run it before showing this to anyone:
+
+cd ml-service && python check_providers.py
+
+# It prints one line per provider and exits non-zero if nothing works:
+#
+#   ok   google_news  (0.4s) 3 results
+#        Reuters                India's prime minister resigns after coalition...
+#   ok   wikipedia    (0.3s) 3 results
+#   FAIL duckduckgo   (2.1s) HTTP 429 — rate limited. Wait, or configure a
+#                            keyed provider instead.
+#   skip gnews        GNEWS_API_KEY not set — optional, improves recall
+#
+# A blocked or rate-limited provider returns nothing, the pipeline reports
+# insufficient evidence, and the natural conclusion is that the fact-checker is
+# broken — when in fact no search ran. This separates those two cases in about
+# ten seconds.
 
 # Server — 17 tests: auth middleware, history pagination, proxy validation.
 # No database or network required.
