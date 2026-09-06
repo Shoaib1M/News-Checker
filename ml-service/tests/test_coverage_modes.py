@@ -325,3 +325,70 @@ class TestTheWireLabelSurvivesNormalisation(unittest.TestCase):
         raw = self.RECENCY_LABELS[0]
         resolved = resolve_mode(normalize_claim(raw), "historical", submitted=raw)
         self.assertEqual(resolved.mode, "historical")
+
+
+class TestTheModeIsAHintNotARequirement(unittest.TestCase):
+    """An unrecognised mode must not fail the whole fact-check.
+
+    `resolve_mode()` has always normalised anything it does not recognise to
+    "auto", but a `pattern=` constraint on the request model made that fallback
+    unreachable: an unknown value was rejected with a raw Pydantic 422 before
+    any of the logic ran. It also disagreed with the Express proxy, which
+    coerces unknown modes to "auto" — so the same request succeeded through the
+    UI and failed against the API directly.
+
+    This is a search hint with a safe default. Refusing to check a claim
+    because the hint was malformed is the wrong trade.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._cm = TestClient(main.app)
+        cls.client = cls._cm.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._cm.__exit__(None, None, None)
+
+    def check(self, mode):
+        nli = _NLI()
+        with patch.object(
+            evidence_pipeline, "search_all_providers",
+            lambda q, **k: ([], [ProviderDiagnostic(
+                provider="google_news", query="q", enabled=True,
+                status="no_results")])
+        ), patch.object(evidence_pipeline, "get_nli_service", lambda: nli), \
+                patch.object(main, "get_nli_service", lambda: nli):
+            return self.client.post(
+                "/api/check", json={"statement": RECENT_CLAIM, "mode": mode})
+
+    def test_an_unknown_mode_is_normalised_rather_than_refused(self):
+        for mode in ("sideways", "", "yesterday-ish"):
+            with self.subTest(mode=mode):
+                response = self.check(mode)
+                self.assertEqual(response.status_code, 200, response.text)
+
+    def test_an_unknown_mode_falls_back_to_reading_the_claim(self):
+        """RECENT_CLAIM says "this morning", so auto resolves to recent."""
+        body = self.check("sideways").json()
+        self.assertEqual(body["coverage"]["mode"], "recent")
+
+    def test_case_is_not_significant(self):
+        self.assertEqual(self.check("RECENT").json()["coverage"]["mode"], "recent")
+        self.assertEqual(
+            self.check("Historical").json()["coverage"]["mode"], "historical")
+
+    def test_a_valid_mode_still_wins_over_the_wording(self):
+        body = self.check("historical").json()
+        self.assertEqual(body["coverage"]["mode"], "historical")
+
+    def test_the_request_model_carries_no_pattern_constraint(self):
+        """The drift guard: re-adding one silently resurrects the 422."""
+        field = main.CheckRequest.model_fields["mode"]
+        patterns = [
+            getattr(m, "pattern", None) for m in getattr(field, "metadata", [])
+        ]
+        self.assertTrue(
+            all(p is None for p in patterns),
+            "a pattern on `mode` makes resolve_mode()'s fallback unreachable",
+        )

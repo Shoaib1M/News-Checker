@@ -212,7 +212,18 @@ class CheckRequest(BaseModel):
     # "auto" reads the claim's own wording, which is a convenience rather than
     # a substitute: "the PM resigned" is a claim about today for someone who
     # just saw it on television, and no parser can tell.
-    mode: str = Field(default="auto", pattern="^(auto|recent|historical)$")
+    #
+    # Deliberately NOT pattern-constrained. `resolve_mode()` already falls back
+    # to "auto" for anything it does not recognise, and a regex here made that
+    # fallback unreachable — an unknown value rejected the whole fact-check
+    # with a raw Pydantic 422 instead. This is a search hint with a safe
+    # default; failing an entire check over a malformed hint is the wrong
+    # trade, and it disagreed with the Express proxy, which coerces. Values
+    # outside {auto, recent, historical} are normalised, not refused.
+    mode: str = Field(
+        default="auto",
+        description="auto | recent | historical (anything else is read as auto)",
+    )
 
 
 # ── Nested response models ───────────────────────────────────────────

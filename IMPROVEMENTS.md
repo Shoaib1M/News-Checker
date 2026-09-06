@@ -1219,3 +1219,29 @@ and a load failure is non-fatal by design (the service abstains rather than
 crashing) — but the checkpoint should be confirmed on first run via
 `/api/health` → `nli.status`, and compared against the old one with
 `python stance_sweep.py --show-errors`.
+
+### Bug 35 — a malformed search hint rejected the whole fact-check
+
+`main.py`
+
+`resolve_mode()` has always normalised an unrecognised mode to `auto`. A
+`pattern="^(auto|recent|historical)$"` constraint on `CheckRequest.mode` made
+that fallback unreachable: an unknown value was refused with a raw Pydantic 422
+before any logic ran.
+
+```
+mode="sideways"  ->  HTTP 422  string_pattern_mismatch
+mode=""          ->  HTTP 422  string_pattern_mismatch
+mode="RECENT"    ->  HTTP 422  string_pattern_mismatch
+```
+
+It also disagreed with the Express proxy, which coerces unknown modes to
+`auto` — so the same request succeeded through the UI and failed against the
+API directly. `mode` is a **search hint with a safe default**; refusing to check
+a claim because the hint was malformed is the wrong trade, and it is the same
+class of bug as the over-long statement that used to return a raw 422 wrapped
+as a 502.
+
+The constraint is gone; values outside the set are normalised, case included.
+A drift test asserts no pattern has been re-added — verified to fail when one
+is, along with two behavioural tests.
