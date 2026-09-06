@@ -602,3 +602,62 @@ class TestMultiClaimRetrievalState(VerdictCaseMixin, unittest.TestCase):
 
         providers = {d.get("provider") for d in body["retrieval"]["diagnostics"]}
         self.assertEqual(providers, {"gnews", "wikipedia"})
+
+
+# ── 10. Language scope must be stated, not disguised as gibberish ────
+class TestUnsupportedLanguage(unittest.TestCase):
+    """Every stage here is English-only — say so rather than implying nonsense.
+
+    The NLI model, the event vocabulary, the abbreviation and demonym tables,
+    and the providers (queried with lang=en) are all English. A Hindi or
+    Spanish claim cannot be checked, and used to be reported as "no verifiable
+    claim found" — which tells the user their claim was unintelligible rather
+    than out of scope. Those are very different messages to receive.
+    """
+
+    def triage(self, statement):
+        from claim_triage import triage_claim
+        return triage_claim(statement)
+
+    def test_non_latin_scripts_are_reported_as_out_of_scope(self):
+        for language, statement in (
+            ("Hindi", "भारत के प्रधानमंत्री ने आज सुबह इस्तीफा दे दिया"),
+            ("Arabic", "رئيس الوزراء الهندي استقال هذا الصباح"),
+            ("Chinese", "印度总理今天早上辞职了"),
+            ("Japanese", "インドの首相が今朝辞任した"),
+            ("Russian", "Премьер-министр Индии подал в отставку"),
+        ):
+            with self.subTest(language=language):
+                result = self.triage(statement)
+                self.assertEqual(result.claim_type, "unsupported language")
+                self.assertIn("English", result.reason)
+
+    def test_latin_script_languages_are_recognised_too(self):
+        for language, statement in (
+            ("Spanish", "El primer ministro de India renunció esta mañana"),
+            ("French", "Le premier ministre a démissionné ce matin"),
+            ("German", "Der Premierminister ist heute Morgen zurückgetreten"),
+        ):
+            with self.subTest(language=language):
+                self.assertEqual(self.triage(statement).claim_type, "unsupported language")
+
+    def test_english_is_never_misread_as_foreign(self):
+        """The property that matters: no false positives on real English."""
+        for statement in (
+            "The prime minister of India resigned this morning",
+            "Google banned all US cities immediately",
+            "Modi resigned Tuesday morning citing health",
+            "Angela Merkel resigned as chancellor",
+            "Marine Le Pen won the presidential election in France",
+            "Le Monde reported the resignation on Tuesday",
+            "Rio de Janeiro hosted the summit last week",
+            "The café owner resigned after the exposé",
+            "The coup de grace came as the vote failed",
+        ):
+            with self.subTest(statement=statement):
+                self.assertNotEqual(
+                    self.triage(statement).claim_type, "unsupported language"
+                )
+
+    def test_out_of_scope_is_not_searched(self):
+        self.assertFalse(self.triage("印度总理今天早上辞职了").search_worthwhile)

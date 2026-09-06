@@ -171,6 +171,9 @@ describe("check proxy", () => {
   }
 
   it("rejects a statement that is too short before calling the ML service", async () => {
+    // This assertion only became real once the route stopped importing
+    // node-fetch: an imported binding cannot be stubbed, so `called` was
+    // never set either way and the check passed vacuously.
     let called = false;
     const res = await callCheck({
       statement: "hi",
@@ -191,5 +194,49 @@ describe("check proxy", () => {
   it("rejects a non-string statement", async () => {
     const res = await callCheck({ statement: 42 });
     assert.equal(res.statusCode, 400);
+  });
+});
+
+// ── Statement length bounds ──────────────────────────────────────────
+describe("statement length", () => {
+  async function callCheck(statement) {
+    const { default: router } = await import("../routes/check.js");
+    const layer = router.stack.find((l) => l.route?.methods?.post);
+    const handlers = layer.route.stack.map((s) => s.handle);
+    const req = { body: { statement }, headers: {} };
+    const res = fakeResponse();
+
+    const originalFetch = globalThis.fetch;
+    let upstreamCalled = false;
+    globalThis.fetch = async () => {
+      upstreamCalled = true;
+      return { ok: true, json: async () => ({}) };
+    };
+    try {
+      await new Promise((resolve) => handlers[0](req, res, resolve));
+      await handlers[1](req, res, () => {});
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    return { res, upstreamCalled };
+  }
+
+  it("rejects an over-long statement here rather than upstream", async () => {
+    // Forwarding it produced a Pydantic 422, relayed to the user as a 502
+    // "ML service error" — a broken backend, apparently, rather than "too long".
+    const { res, upstreamCalled } = await callCheck("a".repeat(2001));
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /at most 2000/);
+    assert.equal(upstreamCalled, false);
+  });
+
+  it("accepts a statement at exactly the limit", async () => {
+    const { upstreamCalled } = await callCheck("a".repeat(2000));
+    assert.equal(upstreamCalled, true, "2000 characters is valid, not too long");
+  });
+
+  it("measures the trimmed length, not the raw length", async () => {
+    const { upstreamCalled } = await callCheck("  " + "a".repeat(2000) + "  ");
+    assert.equal(upstreamCalled, true);
   });
 });
