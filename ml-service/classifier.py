@@ -18,17 +18,39 @@ research-only, kept for the "Logistic Regression" column in Model Comparison.
 import numpy as np
 
 class LogisticRegression:
-    def __init__(self, learning_rate=0.01, epochs=100):
+    """
+    WHY THE DEFAULTS CHANGED — THE OLD ONES NEVER TRAINED:
+
+    This ran 100 full-batch steps at lr=0.01 (and 0.1 from evaluate_models.py)
+    from a zero start, on L2-normalised TF-IDF rows. Measured on the LIAR test
+    set, the model it produced emitted scores in the range [0.5543, 0.5597]:
+    every single one above 0.5, so it predicted "true-ish" for all 1,267 rows
+    and scored 56.35% — exactly the majority-class rate, to four decimals.
+
+    That is not a weak baseline, it is a *stopped* one, and it made the Model
+    Comparison page misleading in the direction that flatters the production
+    model. The tell was in the same run: its ROC-AUC was 0.661, so the ranking
+    it had learned was fine. Only the decision boundary had never moved.
+
+    Full-batch gradient descent on this objective needs a step size in the
+    ones, not the hundredths, because the L2-normalised rows make the gradient
+    tiny. With momentum and enough epochs it converges, and the number it then
+    reports is a real lower bound on what the neural network has to beat.
+    """
+
+    def __init__(self, learning_rate=2.0, epochs=400, l2=1e-4, momentum=0.9):
         self.lr = learning_rate
         self.epochs = epochs
+        self.l2 = l2
+        self.momentum = momentum
         self.weights = None
         self.bias = 0
 
     def sigmoid(self, z):
         # converts any number to 0-1 probability
-        return 1 / (1 + np.exp(-z))
+        return 1 / (1 + np.exp(-np.clip(z, -60, 60)))
 
-    def fit(self, X, y):
+    def fit(self, X, y, quiet=False):
         # X is shape (num_statements, vocab_size)
         # y is shape (num_statements,) — 0 or 1
         num_samples, num_features = X.shape
@@ -36,6 +58,8 @@ class LogisticRegression:
         # start weights at zero
         self.weights = np.zeros(num_features)
         self.bias = 0
+        velocity = np.zeros(num_features)
+        bias_velocity = 0.0
 
         for epoch in range(self.epochs):
             # forward pass — make predictions
@@ -50,13 +74,17 @@ class LogisticRegression:
 
             # gradient descent — nudge weights in the right direction
             error = predictions - y
-            dw = np.dot(X.T, error) / num_samples
+            dw = np.dot(X.T, error) / num_samples + self.l2 * self.weights
             db = np.mean(error)
 
-            self.weights -= self.lr * dw
-            self.bias -= self.lr * db
+            # Step decay, so the run can start fast and still settle.
+            step = self.lr * (0.5 ** (epoch / 150))
+            velocity = self.momentum * velocity - step * dw
+            self.weights += velocity
+            bias_velocity = self.momentum * bias_velocity - step * db
+            self.bias += bias_velocity
 
-            if epoch % 10 == 0:
+            if not quiet and epoch % 50 == 0:
                 print(f"Epoch {epoch} — loss: {loss:.4f}")
 
     def predict_proba(self, X):
@@ -80,9 +108,12 @@ if __name__ == "__main__":
         "context"
     ]
 
-    # load data
-    train_df = pd.read_csv('../data/train.tsv', sep='\t', names=columns)
-    test_df  = pd.read_csv('../data/test.tsv',  sep='\t', names=columns)
+    # load data -- through read_liar(), because pandas' default quote handling
+    # swallows 45 rows across the three splits. See binary_truth_mlp.read_liar.
+    from binary_truth_mlp import load_split
+
+    train_df = load_split("train")
+    test_df = load_split("test")
 
     # simplify labels to binary
     fake = {'pants-fire', 'false', 'barely-true'}
@@ -105,7 +136,7 @@ if __name__ == "__main__":
     print(f"Training on {X_train.shape[0]} statements...")
 
     # train the model
-    model = LogisticRegression(learning_rate=0.1, epochs=100)
+    model = LogisticRegression()
     model.fit(X_train, y_train)
 
     # evaluate

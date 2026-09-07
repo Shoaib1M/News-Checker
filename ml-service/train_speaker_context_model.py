@@ -46,6 +46,7 @@ if str(SERVICE_DIR) not in sys.path:
 from binary_truth_mlp import (  # noqa: E402
     COLUMNS,
     BinaryTruthMLP,
+    load_split,
     build_history_features,
     build_text_input,
     find_best_threshold,
@@ -66,9 +67,10 @@ def bootstrap_ci(y_true, predictions, resamples=2000, seed=0):
 
 
 def main() -> int:
-    frames = {name: pd.read_csv(SERVICE_DIR / "data" / f"{name}.tsv", sep="\t",
-                                names=COLUMNS)
-              for name in ("train", "valid", "test")}
+    # load_split(), not a bare read_csv: pandas' default quote handling treats
+    # `"` as a quote character and merges rows in these TSVs, losing 45 of them
+    # across the three splits. See binary_truth_mlp.read_liar.
+    frames = {name: load_split(name) for name in ("train", "valid", "test")}
     labels = {name: labels_to_binary(f["label"]) for name, f in frames.items()}
 
     vectorizer = TFIDFVectorizer()

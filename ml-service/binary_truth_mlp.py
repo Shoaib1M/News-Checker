@@ -15,6 +15,7 @@ USED BY:
 """
 
 from pathlib import Path
+import csv
 import pickle
 
 import numpy as np
@@ -28,6 +29,43 @@ COLUMNS = [
     "barely_true", "false", "half_true", "mostly_true", "pants_fire",
     "context",
 ]
+
+DATA_DIR = Path(__file__).resolve().parent / "data"
+
+
+def read_liar(path):
+    """Read a LIAR split. Use this, never a bare `pd.read_csv(..., sep='\\t')`.
+
+    WHY IT EXISTS — THE DEFAULT PARSER SILENTLY LOSES ROWS:
+    pandas defaults to `quotechar='"'`. LIAR is a tab-separated file whose
+    statements quote people, so a claim containing one `"` opens a quoted
+    field that stays open until the next `"` — several lines later. Everything
+    in between is absorbed into that row's `statement`, carrying raw tab
+    characters and the following rows' ids, labels and speaker metadata with
+    it, under the FIRST row's label.
+
+    Measured against the files on disk:
+
+        split   lines in file   rows pandas returned   lost
+        train      10,269              10,240           29
+        valid       1,284               1,284            0
+        test        1,283               1,267           16
+
+    So the test set every number in this project was reported on had 1,267 of
+    its 1,283 rows, 2 of which were several claims glued together; the longest
+    "statement" it produced was 431 words, where the real maximum is 48. The
+    training set was missing 29 rows and mislabelling a couple more. It is a
+    small effect, but it is the kind that quietly moves the second decimal
+    place of every figure, and there is no reason to accept it.
+
+    QUOTE_NONE is correct here rather than a workaround: in a TSV the tab is
+    the delimiter, so a quote character carries no structural meaning at all.
+    """
+    return pd.read_csv(path, sep="\t", names=COLUMNS, quoting=csv.QUOTE_NONE)
+
+
+def load_split(name, data_dir=None):
+    return read_liar(Path(data_dir or DATA_DIR) / f"{name}.tsv")
 
 # We collapse 6 categories into 2 simple buckets for binary classification
 FAKEISH_LABELS = {"pants-fire", "false", "barely-true"}
@@ -216,8 +254,13 @@ class BinaryTruthMLP:
                               f"(best valid loss {best_valid_loss:.4f})")
                     break
 
-            # Reporting
-            should_report = epoch == 1 or epoch % 5 == 0
+            # Reporting. `quiet` has to gate the COMPUTATION, not just the
+            # print: this block runs a forward pass over the entire training
+            # set, which on 10,240 rows by 26,626 features costs more than the
+            # epoch that produced it. A quiet sweep was paying for output it
+            # then threw away — five-fold cross-validation of this model spent
+            # about a fifth of its time here.
+            should_report = not quiet and (epoch == 1 or epoch % 5 == 0)
             if should_report:
                 train_pred = self.predict_proba(X)
                 train_loss = self.loss(train_pred, y)
@@ -239,8 +282,7 @@ class BinaryTruthMLP:
                         f"threshold: {valid_threshold:.2f}"
                     )
 
-                if not quiet:
-                    print(message)
+                print(message)
 
         # Restore the weights that generalised best, not the ones the last
         # epoch happened to leave behind.
@@ -267,6 +309,7 @@ class BinaryTruthMLP:
     """
     def state_dict(self):
         return {
+            "kind": "mlp",
             "input_size": self.input_size,
             "hidden_size": self.hidden_size,
             "learning_rate": self.lr,
@@ -296,6 +339,163 @@ class BinaryTruthMLP:
         model.b1 = state["b1"]
         model.W2 = state["W2"]
         model.b2 = state["b2"]
+        return model
+
+
+class LinearTruthModel:
+    """L2-regularised logistic regression on sparse TF-IDF. The shipped model.
+
+    WHY THIS REPLACED THE HIDDEN LAYER:
+    `BinaryTruthMLP` above is kept — it is what the project shipped and what
+    the Model Comparison page reports — but it is not the best model for this
+    feature space, and a sweep says so rather than an opinion.
+
+    Measured by 5-fold cross-validation over train+valid (11,553 rows;
+    `train_experiments.py`, which never opens test.tsv):
+
+        this model, sublinear-TF word TF-IDF   0.6263   AUC 0.6616
+        the same model on raw TF               0.6254   AUC 0.6620
+        the same model plus char 3-5grams      0.6254   AUC 0.6598
+        shipped BinaryTruthMLP                 0.6211   AUC 0.6558
+        BinaryTruthMLP, lr 0.5 + early stop    0.5928   AUC 0.6073
+        majority class                         0.5574
+
+    That is +0.97 points over the incumbent, 95% CI [+0.38, +1.51], paired over
+    the same rows — which clears zero, unlike the same comparison on the
+    1,283-row test set (+0.78, CI [-0.70, +2.26]). A split that size cannot
+    resolve a one-point effect; that is why selection cross-validates.
+
+    What does the work is regularisation, not depth. The hidden layer trained
+    with no penalty at all on 26,626 dimensions over 10,240 rows, and every
+    family in the sweep peaked at its most-regularised setting. A hidden layer
+    buys nothing here because there is very little interaction structure to
+    find — the signal in a claim's wording is close to additive, and adding
+    depth back on the same features costs about two points.
+
+    Character n-grams are NOT here, and that is a measurement rather than an
+    oversight: they were the best thing in the single-split sweep and are worth
+    nothing cross-validated (0.6254 against 0.6263), at three times the
+    vocabulary.
+
+    NOT A FACT-CHECKER. See the module docstring and README: this scores how
+    a claim is *worded* against a corpus of rated political statements. The
+    verdict never reads it.
+    """
+
+    def __init__(
+        self,
+        input_size,
+        l2=1e-4,
+        epochs=400,
+        learning_rate=2.0,
+        momentum=0.9,
+        halve_every=150,
+        seed=42,
+    ):
+        self.input_size = input_size
+        self.l2 = l2
+        self.epochs = epochs
+        self.lr = learning_rate
+        self.momentum = momentum
+        # Step-size decay, expressed in epochs rather than as a rate, so the
+        # schedule reads the same whatever `epochs` is set to.
+        self.halve_every = halve_every
+        self.seed = seed
+        self.weights = np.zeros(input_size)
+        self.bias = 0.0
+        self.best_threshold = 0.5
+
+    # `seed` is carried for interface parity with BinaryTruthMLP and for the
+    # artifact; full-batch training from a zero start has nothing random in it,
+    # which is the point — two runs of this configuration are bit-identical.
+
+    @staticmethod
+    def sigmoid(z):
+        return 1.0 / (1.0 + np.exp(-np.clip(z, -60, 60)))
+
+    def _scores(self, X):
+        if hasattr(X, "dot") and not isinstance(X, np.ndarray):
+            return X.dot(self.weights) + self.bias      # SparseMatrix
+        return np.asarray(X) @ self.weights + self.bias  # dense, one live row
+
+    def loss(self, predicted, actual):
+        predicted = np.clip(np.asarray(predicted).flatten(), 1e-9, 1 - 1e-9)
+        return -np.mean(actual * np.log(predicted) + (1 - actual) * np.log(1 - predicted))
+
+    def fit(self, X, y, X_valid=None, y_valid=None, quiet=False):
+        """Full-batch gradient descent with momentum. Full-batch, not
+        mini-batch, because the objective is convex and the whole gradient is
+        one sparse product — there is nothing to gain from noise, and it makes
+        the run deterministic."""
+        y = np.asarray(y, dtype=float)
+        n = X.shape[0]
+        velocity = np.zeros_like(self.weights)
+        bias_velocity = 0.0
+
+        for epoch in range(1, self.epochs + 1):
+            predicted = self.sigmoid(self._scores(X))
+            residual = (predicted - y) / n
+            # The L2 penalty is on the weights only. Penalising the bias would
+            # drag the decision boundary towards 0.5 without reducing capacity.
+            gradient = X.transpose_dot(residual) + self.l2 * self.weights
+            bias_gradient = residual.sum()
+
+            step = self.lr * (0.5 ** (epoch / self.halve_every))
+            velocity = self.momentum * velocity - step * gradient
+            self.weights += velocity
+            bias_velocity = self.momentum * bias_velocity - step * bias_gradient
+            self.bias += bias_velocity
+
+            if not quiet and (epoch == 1 or epoch % 50 == 0):
+                message = (f"Epoch {epoch:03d} | loss: {self.loss(predicted, y):.4f} | "
+                           f"train accuracy: {accuracy(predicted, y) * 100:.2f}%")
+                if X_valid is not None and y_valid is not None:
+                    valid = self.predict_proba(X_valid)
+                    message += (f" | valid loss: {self.loss(valid, y_valid):.4f} | "
+                                f"valid accuracy: {accuracy(valid, y_valid) * 100:.2f}%")
+                print(message)
+
+        if X_valid is not None and y_valid is not None:
+            self.best_threshold, _ = find_best_threshold(
+                self.predict_proba(X_valid), y_valid)
+
+    def predict_proba(self, X):
+        return self.sigmoid(self._scores(X)).flatten()
+
+    def predict(self, X, threshold=None):
+        if threshold is None:
+            threshold = self.best_threshold
+        return (self.predict_proba(X) >= threshold).astype(int)
+
+    def state_dict(self):
+        return {
+            "kind": "linear",
+            "input_size": self.input_size,
+            "l2": self.l2,
+            "epochs": self.epochs,
+            "learning_rate": self.lr,
+            "momentum": self.momentum,
+            "halve_every": self.halve_every,
+            "seed": self.seed,
+            "best_threshold": self.best_threshold,
+            "weights": self.weights,
+            "bias": self.bias,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state):
+        model = cls(
+            input_size=state["input_size"],
+            l2=state["l2"],
+            epochs=state["epochs"],
+            learning_rate=state["learning_rate"],
+            momentum=state.get("momentum", 0.9),
+            halve_every=state.get("halve_every", 150),
+            seed=state.get("seed", 42),
+        )
+        model.weights = state["weights"]
+        model.bias = state["bias"]
+        model.best_threshold = state["best_threshold"]
         return model
 
 
@@ -337,14 +537,38 @@ def normalize_rows(X):
 
 """
 PURPOSE: Mashes the statement, speaker name, job, and state into one long string.
+
+WHY IT SKIPS EMPTY FIELDS — THIS WAS A TRAIN/SERVE SKEW:
+The previous version emitted every column unconditionally, name first:
+
+    "statement The economy grew by 3 percent. subject  speaker  job  state  party  context "
+
+`main()` trained the shipped model on the bare statement, but every live
+request goes through `make_prediction_features()`, which fills the metadata
+with blanks and passes the row through here. So the model was trained on one
+string and served another: seven extra tokens plus seven boundary bigrams on
+every single request, against a vocabulary that had never seen that shape.
+It cost 0.47 points of accuracy — the model scores 62.35% on the text it was
+trained on and 61.88% on the text production actually sends it.
+
+Emitting a field only when it has a value makes a statement-only row come out
+as exactly the statement, so the two paths cannot diverge again. The column
+name is still prefixed to metadata fields, because "texas" as a state and
+"texas" inside a claim are different features; the statement needs no tag
+because it is the one field that is always present.
 """
 def build_text_input(df):
-    pieces = []
-    for column in TEXT_FEATURE_COLUMNS:
-        values = df[column].fillna("").astype(str)
-        pieces.append(column + " " + values)
+    rows = []
+    for _, row in df[TEXT_FEATURE_COLUMNS].iterrows():
+        pieces = []
+        for column in TEXT_FEATURE_COLUMNS:
+            value = "" if pd.isna(row[column]) else str(row[column]).strip()
+            if not value:
+                continue
+            pieces.append(value if column == "statement" else f"{column} {value}")
+        rows.append(" ".join(pieces))
 
-    return pd.Series(" ".join(row) for row in zip(*pieces))
+    return pd.Series(rows, dtype=object)
 
 """
 PURPOSE: Extracts numerical history data and scales it down.
@@ -414,7 +638,12 @@ def build_history_features(df, train_max_values=None, deleak_labels=None):
 # ---------------------------------------------------------------------------
 
 def save_artifacts(path, model, vectorizer, train_max_values):
-    # Bundle everything needed to make a prediction into one object
+    # Bundle everything needed to make a prediction into one object.
+    #
+    # Every vectorizer setting that changes the FEATURES has to be written
+    # here. A setting that is saved by the trainer and defaulted by the loader
+    # silently serves a different feature space than it trained on, which is
+    # the same class of bug as the train/serve text skew in build_text_input().
     artifacts = {
         "model": model.state_dict(),
         "vectorizer": {
@@ -423,6 +652,9 @@ def save_artifacts(path, model, vectorizer, train_max_values):
             "vocab_size": vectorizer.vocab_size,
             "ngram_range": vectorizer.ngram_range,
             "min_df": vectorizer.min_df,
+            "char_ngram_range": vectorizer.char_ngram_range,
+            "sublinear_tf": vectorizer.sublinear_tf,
+            "smooth_idf": vectorizer.smooth_idf,
         },
         "train_max_values": train_max_values,
     }
@@ -432,24 +664,91 @@ def save_artifacts(path, model, vectorizer, train_max_values):
         pickle.dump(artifacts, file)
 
 
+# Artifacts written before the linear model existed carry no "kind", and they
+# are all MLPs.
+MODEL_KINDS = {"mlp": BinaryTruthMLP, "linear": LinearTruthModel}
+
+
 def load_artifacts(path):
     with open(path, "rb") as file:
         artifacts = pickle.load(file)
 
-    # Reconstruct the TFIDF Vectorizer
+    # Reconstruct the TFIDF Vectorizer. `.get` with the pre-existing default
+    # for each new setting, so an artifact saved by an older version of this
+    # file still loads and still behaves exactly as it did.
     vectorizer_state = artifacts["vectorizer"]
     vectorizer = TFIDFVectorizer(
         ngram_range=vectorizer_state["ngram_range"],
         min_df=vectorizer_state["min_df"],
+        char_ngram_range=vectorizer_state.get("char_ngram_range"),
+        sublinear_tf=vectorizer_state.get("sublinear_tf", False),
+        smooth_idf=vectorizer_state.get("smooth_idf", False),
     )
     vectorizer.vocab = vectorizer_state["vocab"]
     vectorizer.idf_values = vectorizer_state["idf_values"]
     vectorizer.vocab_size = vectorizer_state["vocab_size"]
 
-    # Reconstruct the Neural Network
-    model = BinaryTruthMLP.from_state_dict(artifacts["model"])
-    
+    # Reconstruct whichever model was saved
+    model_state = artifacts["model"]
+    model = MODEL_KINDS[model_state.get("kind", "mlp")].from_state_dict(model_state)
+
     return model, vectorizer, artifacts["train_max_values"]
+
+def build_feature_frame(statements, **metadata):
+    """The one row shape every path builds from: the statement, whatever
+    metadata the caller supplied, and the blank/zero defaults a live request
+    sends for the rest."""
+    rows = []
+    for statement in statements:
+        row = {"statement": statement}
+        for column in TEXT_FEATURE_COLUMNS:
+            if column != "statement":
+                row[column] = metadata.get(column, "")
+        for column in HISTORY_COLUMNS:
+            row[column] = metadata.get(column, 0)
+        rows.append(row)
+    return pd.DataFrame(rows, columns=TEXT_FEATURE_COLUMNS + HISTORY_COLUMNS)
+
+
+def make_training_features(vectorizer, statements, **metadata):
+    """The same features as `make_prediction_features_batch`, sparse.
+
+    WHY BOTH EXIST: a live request scores one row, where dense is simplest and
+    cheapest. Training scores 11,553 rows against 29,205 features, where dense
+    is 2.7 GB of mostly zeros — and the sweep in
+    docs/ML_MODEL_INVESTIGATION.md had to try representations three times that
+    size. The two forms must agree exactly or the model is trained on something
+    other than what it is served —
+    `tests/test_model_evaluation_path.py` pins that they do, row by row.
+
+    The history columns are appended as empty columns rather than dropped, so
+    a weight vector trained here indexes the same features a dense serving row
+    presents. They carry no values because a live claim has no speaker history
+    (and, per `build_history_features`, the training-set version of that
+    feature leaks the label anyway).
+    """
+    frame = build_feature_frame(statements, **metadata)
+    matrix = vectorizer.transform_sparse(build_text_input(frame), l2_normalize=True)
+    matrix.n_columns += len(HISTORY_COLUMNS)
+    return matrix
+
+
+def predict_proba_texts(model, vectorizer, train_max_values, statements, chunk=128):
+    """Score many statements through the live request's own feature path.
+
+    Evaluation has to use the serving path or its number describes a model
+    nobody runs — that is how this project once reported 56.9% for a model
+    that scores 61.9%. But the dense serving form of 1,283 test rows against
+    29,205 features is 300 MB, so it goes through in chunks.
+    """
+    statements = list(statements)
+    scores = []
+    for start in range(0, len(statements), chunk):
+        features = make_prediction_features_batch(
+            vectorizer, train_max_values, statements[start:start + chunk])
+        scores.append(model.predict_proba(features))
+    return np.concatenate(scores) if scores else np.zeros(0)
+
 
 """
 PURPOSE: Core function used by `main.py` to turn raw text into model-ready numbers.
@@ -475,17 +774,7 @@ def make_prediction_features_batch(
     serving cannot drift apart again. Any metadata a caller does not supply
     defaults to the blank/zero value the API sends.
     """
-    rows = []
-    for statement in statements:
-        row = {"statement": statement}
-        for column in TEXT_FEATURE_COLUMNS:
-            if column != "statement":
-                row[column] = metadata.get(column, "")
-        for column in HISTORY_COLUMNS:
-            row[column] = metadata.get(column, 0)
-        rows.append(row)
-
-    frame = pd.DataFrame(rows)
+    frame = build_feature_frame(statements, **metadata)
 
     # 1. Process Text
     text_features = normalize_rows(vectorizer.transform(build_text_input(frame)))
@@ -560,13 +849,29 @@ def explain_probability(score):
 # LOCAL TRAINING & TESTING SCRIPTS
 # ---------------------------------------------------------------------------
 
-def main():
-    base_dir = Path(__file__).resolve().parent
-    data_dir = base_dir / "data"
+# The configuration `train_experiments.py` selected by 5-fold cross-validation
+# over train+valid. Nothing here was chosen by looking at the test set.
+#
+# WHY NO CHARACTER N-GRAMS, despite them looking good at first:
+# On the single 1,284-row validation split, adding char 3-5grams was worth
+# +0.6 points and the best AUC in the sweep. Cross-validated over 11,553 rows
+# it is worth NOTHING -- 0.6254 against 0.6263 for word features alone -- and
+# it triples the vocabulary. The apparent gain was the split. That is the
+# entire reason selection moved to cross-validation; see the table in
+# docs/ML_MODEL_INVESTIGATION.md.
+SHIPPED_VECTORIZER = {
+    "ngram_range": (1, 2),
+    "min_df": 2,
+    "sublinear_tf": True,
+    "smooth_idf": True,
+}
+SHIPPED_MODEL = {"l2": 1e-4, "epochs": 400, "learning_rate": 2.0}
 
-    train_df = pd.read_csv(data_dir / "train.tsv", sep="\t", names=COLUMNS)
-    valid_df = pd.read_csv(data_dir / "valid.tsv", sep="\t", names=COLUMNS)
-    test_df = pd.read_csv(data_dir / "test.tsv", sep="\t", names=COLUMNS)
+
+def main():
+    train_df = load_split("train")
+    valid_df = load_split("valid")
+    test_df = load_split("test")
 
     # Train on the same statement-only input available to the live API.
     # Including speaker history here would inflate offline scores because
@@ -576,43 +881,31 @@ def main():
     test_text = test_df["statement"].fillna("").astype(str)
 
     print("Building TF-IDF vocabulary from training data...")
-    vectorizer = TFIDFVectorizer()
-    vectorizer.build_vocab(train_text)
+    vectorizer = TFIDFVectorizer(**SHIPPED_VECTORIZER)
+    vectorizer.build_vocab(build_text_input(build_feature_frame(train_text)))
 
-    X_train_text = normalize_rows(vectorizer.transform(train_text))
-    X_valid_text = normalize_rows(vectorizer.transform(valid_text))
-    X_test_text = normalize_rows(vectorizer.transform(test_text))
+    # Features built by the same function the live request uses, so the model
+    # cannot be trained on a different string than it is served.
+    X_train = make_training_features(vectorizer, train_text)
+    X_valid = make_training_features(vectorizer, valid_text)
+    X_test = make_training_features(vectorizer, test_text)
 
-    X_train_history, train_max_values = build_history_features(
-        train_df.assign(**{column: 0 for column in HISTORY_COLUMNS})
-    )
-    X_valid_history, _ = build_history_features(
-        valid_df.assign(**{column: 0 for column in HISTORY_COLUMNS}), train_max_values
-    )
-    X_test_history, _ = build_history_features(
-        test_df.assign(**{column: 0 for column in HISTORY_COLUMNS}), train_max_values
-    )
-
-    X_train = np.hstack([X_train_text, X_train_history])
-    X_valid = np.hstack([X_valid_text, X_valid_history])
-    X_test = np.hstack([X_test_text, X_test_history])
+    # History counts are zero everywhere: production never sends them, and the
+    # training-set version of the feature leaks the label (see
+    # build_history_features). `train_max_values` exists only so the serving
+    # path has something to divide by.
+    train_max_values = np.ones((1, len(HISTORY_COLUMNS)))
 
     y_train = labels_to_binary(train_df["label"])
     y_valid = labels_to_binary(valid_df["label"])
     y_test = labels_to_binary(test_df["label"])
 
     print(f"Training samples: {X_train.shape[0]}")
-    print(f"Vocabulary size:  {X_train.shape[1]}")
+    print(f"Feature count:    {X_train.shape[1]}")
     print(f"True-ish train labels: {np.mean(y_train) * 100:.2f}%")
-    print("\nTraining binary truth MLP...")
+    print("\nTraining regularised linear truth model...")
 
-    model = BinaryTruthMLP(
-        input_size=X_train.shape[1],
-        hidden_size=64,
-        learning_rate=0.05,
-        epochs=70,
-        batch_size=128,
-    )
+    model = LinearTruthModel(input_size=X_train.shape[1], **SHIPPED_MODEL)
     model.fit(X_train, y_train, X_valid, y_valid)
 
     save_artifacts(MODEL_FILE, model, vectorizer, train_max_values)
@@ -622,6 +915,7 @@ def main():
     test_loss = model.loss(test_scores, y_test)
     test_acc_default = accuracy(test_scores, y_test, threshold=0.5)
     test_acc_tuned = accuracy(test_scores, y_test, threshold=model.best_threshold)
+    baseline = max(float(y_test.mean()), 1 - float(y_test.mean()))
 
     print(f"\nFinal test loss: {test_loss:.4f}")
     print(f"Final test accuracy at 0.50 threshold: {test_acc_default * 100:.2f}%")
@@ -629,6 +923,7 @@ def main():
         f"Final test accuracy at validation-tuned threshold "
         f"({model.best_threshold:.2f}): {test_acc_tuned * 100:.2f}%"
     )
+    print(f"Majority-class baseline on the same rows: {baseline * 100:.2f}%")
 
     print("\nExample predictions:")
     for index in range(5):

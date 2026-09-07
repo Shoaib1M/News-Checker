@@ -1489,3 +1489,131 @@ report says so.
 
 De-leaked speaker context is worth about **+2.6 points**, not the +10 the leaked
 version appeared to give. That difference is the whole point.
+
+---
+
+## ML claim-classification audit
+
+Six defects in the claim model and its measurement, found while answering
+"can this reach 70%?". The full investigation — ceiling analysis, dataset
+survey, and why 70% is not reachable from a claim's wording — is in
+[docs/ML_MODEL_INVESTIGATION.md](docs/ML_MODEL_INVESTIGATION.md).
+
+### The loader silently dropped 45 rows, 16 of them from the test set
+
+`binary_truth_mlp.read_liar()`, `tests/test_dataset_loading.py`
+
+Every `pd.read_csv(path, sep="\t", names=COLUMNS)` in the project read fewer
+rows than the file contains. pandas defaults to `quotechar='"'`; LIAR is a
+tab-separated file full of quoted political speech, so one `"` in a claim opened
+a field that stayed open until the next `"` several lines later, absorbing the
+rows in between — with their tabs, ids, labels and speaker metadata — under the
+FIRST row's label.
+
+| split | lines in file | rows returned | lost |
+|---|---:|---:|---:|
+| train | 10,269 | 10,240 | 29 |
+| valid | 1,284 | 1,284 | 0 |
+| test | 1,283 | 1,267 | **16** |
+
+The project's "1,267 LIAR test examples" was this bug. The longest "statement"
+the old parser produced was **431 words**; the true maximum is **48**. No
+warning, no exception, and an accuracy figure that looked perfectly reasonable.
+`quoting=csv.QUOTE_NONE` is correct rather than a workaround — in a TSV the tab
+is the delimiter, so a quote character carries no structural meaning.
+
+### The model was trained on one string and served another
+
+`build_text_input()`, `tests/test_model_evaluation_path.py`
+
+Training used the bare statement. Every live request went through
+`make_prediction_features()`, which fills metadata with blanks and passed the
+row through `build_text_input()` — which emitted every column unconditionally:
+
+```
+training:  "The economy grew by 3 percent last year."
+serving:   "statement The economy grew by 3 percent last year. subject  speaker  job  state  party  context "
+```
+
+Seven constant tokens plus seven boundary bigrams on every request, against a
+vocabulary that had never seen them. Worth **0.47 points**: 61.88% served
+against 62.35% on the text it was trained on. `build_text_input()` now skips
+empty fields, so a statement-only request reaches the vectorizer as exactly the
+statement.
+
+The existing test asserted the *defect* — "every column name appears in the
+text" — which is why it survived. It now pins the fix.
+
+### Both comparison baselines had never trained
+
+`classifier.py`, `mlp_classifier.py`
+
+The Model Comparison page exists to answer "is the extra machinery earning its
+keep?". Both models it compared against were untrained.
+
+| model | old score | majority baseline | tell |
+|---|---:|---:|---|
+| Logistic Regression | 56.66% | 56.66% | all 1,283 scores inside a 0.004-wide band, one class for every row |
+| MLP 6-class | 20.81% | 20.81% | always answered "half-true" |
+
+Neither is a weak baseline; both are *stopped* ones. The logistic regression's
+AUC was 0.66, so the ranking it had learned was fine — only the decision
+boundary had never moved, because 100 full-batch steps at lr 0.1 on
+L2-normalised TF-IDF rows is nowhere near convergence. Repaired (lr 2.0 with
+momentum and decay; lr 0.2 for 20 epochs chosen on validation) they reach
+**62.43%** and **25.02%**.
+
+That the repaired logistic regression lands within 0.3 points of the shipped
+model is the honest headline of the whole investigation.
+
+### ROC-AUC was integrated off a rounded 200-point grid
+
+`evaluate_models.compute_auc()`
+
+It sampled the ROC curve at 200 fixed thresholds in [0, 1], **rounded each
+coordinate to four decimals**, and trapezoid-integrated. When scores are bunched
+— and the broken baseline's spanned 0.006 — nearly every sample lands on the
+same corner and the integral is of whatever the rounding left behind. Replaced
+with the exact rank form, ties averaged: no grid, no rounding, no free
+parameters.
+
+### Selection used a 1,284-row split to choose between 1-point effects
+
+`train_experiments.py`
+
+The 95% interval on a validation accuracy there is about ±2.6 points. Measured
+cost, with a paired bootstrap over rows: a configuration that beat the incumbent
+by **+3.04 points on validation, CI [+0.70, +5.37]** delivered **+1.34 points on
+the held-out test set, CI [−0.87, +3.55]**. Most of the margin was the split.
+
+Selection now uses 5-fold cross-validation over train+valid — 11,553 rows
+instead of 1,284, folds shared across configurations so comparisons are paired,
+and the decision threshold taken from pooled out-of-fold predictions. The
+criterion is written down in the script before the sweep runs.
+
+It immediately overturned a result: character n-grams were the best thing in the
+single-split sweep and are worth **nothing** cross-validated (0.6254 against
+0.6263 for word features alone, at three times the vocabulary). They are not in
+the shipped model.
+
+### The hidden layer was not earning its keep
+
+`binary_truth_mlp.LinearTruthModel`
+
+Cross-validated over 11,553 rows, an L2-regularised linear model on sublinear-TF
+word TF-IDF scores **0.6263** against **0.6211** for the MLP that shipped —
+**+0.97 points, 95% CI [+0.38, +1.51]**, which clears zero. Every hidden-layer
+configuration tried lost to it, including scikit-learn's own MLP. There is very
+little interaction structure in a claim's wording for depth to find.
+
+Training moved to a sparse feature path (`tfidf.SparseMatrix`, pure NumPy — the
+service still has no scikit-learn or scipy dependency). The artifact went from
+14.4 MB to 1.1 MB and training from about seven minutes to fifteen seconds.
+`tests/test_claim_model.py` pins that the sparse training features and the dense
+serving features are identical row by row, which is the guarantee the whole
+design rests on.
+
+On the held-out test set the total change is **+0.78 points, 95% CI
+[−0.70, +2.26]** — not distinguishable from zero on 1,283 rows, which is what a
+split that size can say about a one-point effect. Accuracy, AUC, Brier and
+calibration all move the right way at once (ECE 0.044 → 0.037).

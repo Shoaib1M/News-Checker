@@ -50,20 +50,63 @@ class MLPClassifier:
         input_size,
         hidden_size=64,
         output_size=6,
-        learning_rate=0.03,
-        epochs=30,
+        learning_rate=0.2,
+        epochs=20,
         batch_size=128,
         seed=42,
     ):
+        """
+        WHY lr AND epochs CHANGED — THE OLD SETTINGS DID NOT TRAIN EITHER:
+
+        At lr=0.03 for 30 epochs this network scored **20.84%** on the LIAR
+        6-class test set, against a 20.92% majority-class baseline. It was
+        below the score you get by always answering "half-true", and its
+        collapsed binary predictions were "true-ish" for every one of the
+        1,267 test rows.
+
+        The cause is the same one documented in binary_truth_mlp: the inputs
+        are L2-normalised sparse rows (~24 non-zeros of ~26,000), so He
+        initialisation scaled for dense inputs leaves the hidden activations
+        near zero and the softmax near uniform. At that learning rate the
+        weights do not climb out inside 30 epochs. It is under-training, not
+        a hard task — the 6-class problem is genuinely hard, but not that hard.
+
+        Six classes over a 6-point ordinal scale where adjacent rungs are
+        rated by human judgement is a legitimately low-ceiling task, so this
+        number stays modest. It should at least beat its own baseline.
+
+        lr AND epochs WERE CHOSEN ON THE VALIDATION SPLIT, not by analogy.
+        A first repair set lr 0.5 by copying the binary model, and on the
+        6-class softmax that is unstable: training accuracy oscillated between
+        30% and 99.8% across epochs while validation sat at 21-25%. Sweeping
+        lr in {0.05, 0.1, 0.2, 0.5} and checking validation every 5 epochs up
+        to 100 gives:
+
+            lr 0.05  best 0.2593 @ 40      lr 0.2   best 0.2656 @ 20
+            lr 0.1   best 0.2617 @ 40      lr 0.5   best 0.2461 @ 60
+
+        against a 0.2048 majority baseline. The curve is noisy on 1,284
+        validation rows -- lr 0.2 reads 0.1931, 0.2656, 0.2453 at 5, 20 and 40
+        epochs -- so treat the neighbouring settings (lr 0.1 at 40 epochs,
+        0.2617) as equivalent rather than worse. This is a comparison model,
+        not the shipped one; what matters is that it now clears its own
+        baseline by six points instead of sitting below it.
+        """
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.lr = learning_rate
         self.epochs = epochs
         self.batch_size = batch_size
+        self.seed = seed
 
         rng = np.random.default_rng(seed)
-        
+        # One generator for BOTH weight init and batch shuffling. `fit` used
+        # np.random.permutation -- the GLOBAL rng -- so `seed` controlled only
+        # where training started and two runs of the same configuration gave
+        # different models. Same defect that was fixed in binary_truth_mlp.py.
+        self._rng = rng
+
         # W1 and b1 connect the Input -> Hidden Layer
         # We use a mathematical trick called "He initialization" (sqrt(2 / input_size)) 
         # so the random numbers aren't too big or too small.
@@ -134,7 +177,7 @@ class MLPClassifier:
 
         for epoch in range(1, self.epochs + 1):
             # Step 1: Shuffle the data every time so it doesn't memorize the order
-            indices = np.random.permutation(n_samples)
+            indices = self._rng.permutation(n_samples)
             X_shuffled = X[indices]
             y_shuffled = y[indices]
             y_one_hot_shuffled = y_one_hot[indices]
@@ -224,12 +267,13 @@ def print_class_accuracy(predictions, actual):
 
 
 def main():
-    base_dir = Path(__file__).resolve().parent
-    data_dir = base_dir.parent / "data"
+    # read_liar(), not pd.read_csv: the default parser treats `"` as a quote
+    # character and swallows 45 rows across the three splits. See its docstring.
+    from binary_truth_mlp import load_split
 
-    train_df = pd.read_csv(data_dir / "train.tsv", sep="\t", names=COLUMNS)
-    valid_df = pd.read_csv(data_dir / "valid.tsv", sep="\t", names=COLUMNS)
-    test_df = pd.read_csv(data_dir / "test.tsv", sep="\t", names=COLUMNS)
+    train_df = load_split("train")
+    valid_df = load_split("valid")
+    test_df = load_split("test")
 
     print("Building TF-IDF vocabulary from training data...")
     vectorizer = TFIDFVectorizer()
