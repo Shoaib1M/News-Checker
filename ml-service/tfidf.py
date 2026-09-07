@@ -224,9 +224,13 @@ class TFIDFVectorizer:
     PURPOSE: Transforms a list of sentences into the sparse triples
     (row indices, column indices, values) plus the matrix shape.
 
-    WHY: this is what makes a 74,000-feature model trainable at all. The dense
-    form of the training set would be 10,240 x 74,424 float64 = 6.1 GB; the
-    sparse form is about 4 MB, because each claim touches ~330 columns.
+    WHY: this is what keeps training cheap and lets the sweep in
+    docs/ML_MODEL_INVESTIGATION.md try representations the dense path could not
+    hold. The shipped word 1-2gram model is 29,205 columns, so its dense
+    training matrix would be 11,553 x 29,205 float64 = 2.7 GB; the sparse form
+    is a few megabytes, because each claim touches about 35 columns. The
+    word + character representations the sweep compares against are three times
+    wider again.
     """
     def transform_sparse(self, documents, l2_normalize=True):
         documents = list(documents)

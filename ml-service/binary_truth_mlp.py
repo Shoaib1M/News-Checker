@@ -350,25 +350,32 @@ class LinearTruthModel:
     the Model Comparison page reports — but it is not the best model for this
     feature space, and a sweep says so rather than an opinion.
 
-    Measured on the LIAR validation split (1,284 rows; selection never touched
-    test), best configuration of each family:
+    Measured by 5-fold cross-validation over train+valid (11,553 rows;
+    `train_experiments.py`, which never opens test.tsv):
 
-        this model, word+char TF-IDF          0.6480
-        LinearSVC + Platt scaling (sklearn)   0.6449
-        sk-learn MLPClassifier, 256 hidden    0.6425
-        shipped BinaryTruthMLP                0.6262
-        majority class                        0.5202
+        this model, sublinear-TF word TF-IDF   0.6263   AUC 0.6616
+        the same model on raw TF               0.6254   AUC 0.6620
+        the same model plus char 3-5grams      0.6254   AUC 0.6598
+        shipped BinaryTruthMLP                 0.6211   AUC 0.6558
+        BinaryTruthMLP, lr 0.5 + early stop    0.5928   AUC 0.6073
+        majority class                         0.5574
 
-    Two things are doing the work, and neither is depth. First, *strong* L2:
-    the hidden layer trained with no penalty at all on 26,626 dimensions over
-    10,240 rows, and every family in the sweep peaked at its most-regularised
-    setting. Second, character n-grams: "tax", "taxes" and "taxpayer" share no
-    word feature and most of a character one.
+    That is +0.97 points over the incumbent, 95% CI [+0.38, +1.51], paired over
+    the same rows — which clears zero, unlike the same comparison on the
+    1,283-row test set (+0.78, CI [-0.70, +2.26]). A split that size cannot
+    resolve a one-point effect; that is why selection cross-validates.
 
-    A hidden layer buys nothing here because there is very little interaction
-    structure to find — the signal in a claim's wording is close to additive.
-    Adding one back on the same features costs about two points, which is the
-    honest reason it is gone.
+    What does the work is regularisation, not depth. The hidden layer trained
+    with no penalty at all on 26,626 dimensions over 10,240 rows, and every
+    family in the sweep peaked at its most-regularised setting. A hidden layer
+    buys nothing here because there is very little interaction structure to
+    find — the signal in a claim's wording is close to additive, and adding
+    depth back on the same features costs about two points.
+
+    Character n-grams are NOT here, and that is a measurement rather than an
+    oversight: they were the best thing in the single-split sweep and are worth
+    nothing cross-validated (0.6254 against 0.6263), at three times the
+    vocabulary.
 
     NOT A FACT-CHECKER. See the module docstring and README: this scores how
     a claim is *worded* against a corpus of rated political statements. The
@@ -707,9 +714,11 @@ def make_training_features(vectorizer, statements, **metadata):
     """The same features as `make_prediction_features_batch`, sparse.
 
     WHY BOTH EXIST: a live request scores one row, where dense is simplest and
-    cheapest. Training scores 10,240 rows against 74,429 features, where dense
-    is 6.1 GB of mostly zeros. The two must agree exactly or the model is
-    trained on something other than what it is served —
+    cheapest. Training scores 11,553 rows against 29,205 features, where dense
+    is 2.7 GB of mostly zeros — and the sweep in
+    docs/ML_MODEL_INVESTIGATION.md had to try representations three times that
+    size. The two forms must agree exactly or the model is trained on something
+    other than what it is served —
     `tests/test_model_evaluation_path.py` pins that they do, row by row.
 
     The history columns are appended as empty columns rather than dropped, so
@@ -729,8 +738,8 @@ def predict_proba_texts(model, vectorizer, train_max_values, statements, chunk=1
 
     Evaluation has to use the serving path or its number describes a model
     nobody runs — that is how this project once reported 56.9% for a model
-    that scores 61.9%. But the dense serving form of 1,267 test rows against
-    74,429 features is 754 MB, so it goes through in chunks.
+    that scores 61.9%. But the dense serving form of 1,283 test rows against
+    29,205 features is 300 MB, so it goes through in chunks.
     """
     statements = list(statements)
     scores = []

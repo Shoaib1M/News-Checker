@@ -384,8 +384,8 @@ def main():
     # model was trained on. It scored 56.9% for a model that gets 61.9% on the
     # inputs it actually receives.
     # predict_proba_texts() calls make_prediction_features_batch() in chunks --
-    # same construction, bounded memory. The dense serving form of 1,267 rows
-    # against 62,257 features would be 631 MB in one allocation.
+    # same construction, bounded memory. The dense serving form of 1,283 rows
+    # against 29,205 features would be 300 MB in one allocation.
     y_test_bt = labels_to_binary(test_df["label"])
     bt_scores = predict_proba_texts(
         bt_model, bt_vectorizer, train_max_values,

@@ -3,11 +3,13 @@
 WHY THIS EXISTS:
 Three things changed in the claim classifier and each one can fail silently:
 
-1. **Training moved to a sparse feature path.** Word + character TF-IDF is
-   62,257 columns; the dense training matrix would be 6.1 GB, so `fit` reads
-   the sparse triples while a live request still builds one dense row. Two
-   code paths computing "the features" is exactly how the previous train/serve
-   skew happened, so the equivalence is pinned here rather than assumed.
+1. **Training moved to a sparse feature path.** The shipped word 1-2gram
+   model is 29,205 columns, so its dense training matrix would be 2.7 GB, and
+   the representations the sweep compares against are three times wider again.
+   `fit` reads sparse triples while a live request still builds one dense row.
+   Two code paths computing "the features" is exactly how the previous
+   train/serve skew happened, so the equivalence is pinned here rather than
+   assumed.
 
 2. **The model is linear now, not an MLP.** A regularised linear model beat
    every hidden-layer configuration on cross-validation; see

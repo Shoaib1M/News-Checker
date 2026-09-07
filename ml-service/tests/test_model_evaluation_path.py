@@ -155,7 +155,7 @@ class TestTheEvaluatorsUseIt(unittest.TestCase):
     def test_the_production_evaluator_scores_through_the_serving_path(self):
         source = self.source("evaluate_production_model.py")
         # predict_proba_texts() is make_prediction_features_batch() in chunks —
-        # the dense serving form of 1,267 rows x 62,257 features is 631 MB in
+        # the dense serving form of 1,283 rows x 29,205 features is 300 MB in
         # one allocation. The guard is that evaluation goes through the serving
         # construction, not that it does so in a single call.
         self.assertTrue("predict_proba_texts(" in source

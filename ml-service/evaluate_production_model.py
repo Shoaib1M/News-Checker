@@ -150,8 +150,8 @@ def evaluate_claim_only_model():
     # longer emits empty fields, so the two forms are now identical for a
     # statement-only request and the skew cannot come back.
     #
-    # predict_proba_texts() chunks the batch. The dense serving form of 1,267
-    # test rows against 62,257 features is 631 MB in a single allocation.
+    # predict_proba_texts() chunks the batch. The dense serving form of 1,283
+    # test rows against 29,205 features is 300 MB in a single allocation.
     probabilities = predict_proba_texts(
         model, vectorizer, train_max_values,
         test_df["statement"].fillna("").astype(str),
