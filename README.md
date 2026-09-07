@@ -27,7 +27,7 @@ This is a full-stack, three-service application: a React frontend, a Node/Expres
 - [Testing](#testing)
 - [Running this for a demo](#running-this-for-a-demo)
   - [NLI model & memory](#nli-model--memory)
-- [Model performance (legacy MLP)](#model-performance-legacy-mlp)
+- [Model performance (legacy claim model)](#model-performance-legacy-claim-model)
 - [Project structure](#project-structure)
 - [Known limitations](#known-limitations)
 - [License](#license)
@@ -110,7 +110,7 @@ flowchart LR
     subgraph ML["ml-service/ — Python + FastAPI"]
         Pipeline["Triage → claim decomposition →<br/>retrieval → relevance →<br/>NLI → aggregation"]
         NLIModel["NLI cross-encoder<br/>(transformers, CPU)"]
-        Legacy["Legacy Binary MLP<br/>(auxiliary signal only)"]
+        Legacy["Legacy claim model<br/>(auxiliary signal only)"]
     end
     subgraph External["External services"]
         Mongo[(MongoDB Atlas)]
@@ -202,7 +202,7 @@ These are the non-negotiable rules the codebase is built around — they were th
 - **Being about the right subjects isn't relevance.** `relevance_filter.py` scores whether a document discusses the *action* the claim asserts, using a synonym vocabulary so different wording still matches ("resigned" / "steps down"). For the claim *"the US is going to ban Google"*, an article headlined "Google expands advertising tools in the United States" scored 0.68 and survived strict filtering purely because both entities appeared in it.
 - **An article that addresses nothing is not evidence for anything.** Sources NLI classifies as neutral are shown under *Related coverage*, explicitly not counted. They previously sat under a heading counting them as evidence, with each card asserting the source "supports" or "contradicts" the claim based on whichever score was larger — 0.04 against 0.03.
 - **Search failure ≠ no evidence ≠ false.** `retrieval.status` distinguishes `SEARCH_FAILED` (all providers errored), `NO_RESULTS` (providers ran, found nothing), `NO_RELEVANT_RESULTS` (results found, none relevant), and `SEARCH_SUCCESS`/`SEARCH_PARTIAL`. These are never conflated.
-- **The legacy MLP never determines the verdict.** `binary_truth_mlp.py` is a from-scratch neural net trained on the LIAR political-statements dataset. It's shown in the API response (`ml.score`) for transparency, flagged `auxiliary_only: true`, but the verdict computation (`evidence_verdict_score`, `merge_claim_summaries`) never reads it.
+- **The legacy claim model never determines the verdict.** `binary_truth_mlp.py` is a from-scratch NumPy classifier trained on the LIAR political-statements dataset. It's shown in the API response (`ml.score`) for transparency, flagged `auxiliary_only: true`, but the verdict computation (`evidence_verdict_score`, `merge_claim_summaries`) never reads it.
 - **NLI label order is not standardized across models — never guess it.** Different NLI models emit their entailment/contradiction/neutral labels in different, undocumented orders. `nli_service.py` only trusts a model's real named labels (order-independent) or an explicit, manually-verified per-model lookup table — an unrecognized model emitting raw `LABEL_0`/`LABEL_1`/`LABEL_2` output makes the service report `failed` and abstain, rather than risk silently inverting every verdict.
 - **Credible sources must actually get read.** Only `max_results` candidates are NLI-classified, and they were chosen by lexical relevance alone — which is backwards for a viral false claim, because the posts repeating it use its precise wording while the debunkings do not. Measured on a realistic pool, eight rumour blogs scored 0.78–0.94 and a PolitiFact fact-check scored 0.735, so the fact-check ranked **ninth** and never reached NLI: the system would have classified eight copies of the rumour and reported the claim supported. `RESERVED_TIER_SLOTS` holds places for candidates from a classified source. Reserving seats rather than adding a score bonus keeps relevance ranking untouched — there is no constant weighing "authority" against "aboutness", just a rule that if credible sources were found, some of them get read.
 - **A debunking article is not evidence for the thing it debunks.** A fact-check quotes the claim it refutes — *"Posts claim the United States banned Google in all its cities"* — and an NLI model scores that as strongly entailing, because the claim is literally in the sentence. The strongest entailment and the strongest contradiction are found **independently** across passages, and passages that merely *report* a claim (`_CLAIM_REPORTING_FRAME`) are excluded from the entailment maximum. Ordinary attribution ("officials said", "according to") is deliberately untouched — that is journalism reporting a fact. Reading both scores off whichever single passage scored highest recorded PolitiFact debunkings as *supporting* the claim, at 0.95 source weight.
@@ -255,13 +255,13 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
     "reasoning": "Relevant external evidence was found and classified."
   },
 
-  // The legacy MLP signal. Advisory only — never drives the verdict.
+  // The legacy claim-model signal. Advisory only — never drives the verdict.
   "ml": {
     "available": true,
     "auxiliary_only": true,
-    "score": 0.61,                   // 0–1 probability from the LIAR-trained MLP
+    "score": 0.61,                   // 0–1 probability from the LIAR-trained claim model
     "verdict": "probably correct",
-    "threshold": 0.49
+    "threshold": 0.51
   },
 
   // What happened during the search phase.
@@ -294,7 +294,7 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
   // ── Legacy/flattened fields, kept for backward compatibility ──
   "ml_score": 0.61,
   "ml_verdict": "probably correct",
-  "ml_threshold": 0.49,
+  "ml_threshold": 0.51,
   "evidence_score": 0.85,
   "evidence_stance": { "support": 0.85, "contradiction": 0.02, "net": 0.83, "verdict": "evidence supports the claim", "status": "supported", "..." : "..." },
   "combined_score": 89,              // 5–95 visual evidence-balance score — NOT a probability of truth
@@ -349,8 +349,8 @@ This is the actual `CheckResponse` shape from `ml-service/main.py`, proxied unch
   "status": "ok",
   "service": "newschecker-ml",
   "model_loaded": true,
-  "input_size": 26626,
-  "threshold": 0.49,
+  "input_size": 29205,
+  "threshold": 0.51,
   "nli": {
     "enabled": true,
     "model": "cross-encoder/nli-deberta-v3-base",
@@ -488,7 +488,7 @@ The first evidence check (a non-deterministic claim) triggers the NLI model down
 ## Testing
 
 ```bash
-# ML service — 475 tests covering claim normalisation and triage, claim
+# ML service — 503 tests covering claim normalisation and triage, claim
 # decomposition, coverage modes and article dating, relevance and action
 # filtering, query generation, numeric-consistency and boilerplate guards,
 # HTML extraction hazards, NLI label-mapping safety, the stance rule, evidence
@@ -649,21 +649,36 @@ Budget 1GB+ of RAM regardless of choice — PyTorch's own import footprint is 30
 2. Check the service logs for a line like `NLI model loaded: <model> — id2label={...}` to confirm what label scheme it actually uses.
 3. If `nli.status` comes back `"failed"` with an "unrecognized label" error, the model emits raw `LABEL_0`/`LABEL_1`/`LABEL_2` output that isn't in the verified table — the service is correctly refusing to guess its order. Add it to `_KNOWN_INDEXED_LABEL_ORDERS` in `nli_service.py` only once you've confirmed the real order from the model's config.
 
-## Model performance (legacy MLP)
+## Model performance (legacy claim model)
 
-The **Binary Truth MLP** (`binary_truth_mlp.py`) is a from-scratch NumPy neural network (no PyTorch/sklearn) trained on the **LIAR dataset** (12,836 labeled political statements), collapsed from 6 classes to binary "Fake-ish"/"True-ish".
+The claim model (`binary_truth_mlp.py`) is a from-scratch NumPy classifier (no
+PyTorch/sklearn) trained on the **LIAR dataset** (12,836 labeled political
+statements), collapsed from 6 classes to binary "Fake-ish"/"True-ish". It is an
+**L2-regularised linear model**, not a hidden-layer network: cross-validated
+over 11,553 rows it beats the MLP that used to ship by **+0.97 points, 95% CI
+[+0.38, +1.51]**, and every hidden-layer configuration tried lost to it. The
+full investigation — audit, ceiling analysis, dataset survey and the reasons
+70% is not reachable from a claim's wording — is in
+[docs/ML_MODEL_INVESTIGATION.md](docs/ML_MODEL_INVESTIGATION.md).
 
-> ⚠️ The commonly-cited **72.38%** LIAR result is **leaked**, not merely metadata-dependent. LIAR's credit-history counts include *the current statement's own label*: of the 2,054 speakers appearing exactly once in the dataset, **99.2%** carry exactly one count, sitting in that statement's own label column. The feature partly *is* the target. `build_history_features(..., deleak_labels=...)` subtracts the current row; `tests/test_history_leakage.py` pins both the defect and the fix.
+> ⚠️ The commonly-cited **72.38%** LIAR result is **leaked**, not merely metadata-dependent. LIAR's credit-history counts include *the current statement's own label*: of the 2,056 speakers appearing exactly once in the dataset, **99.2%** carry exactly one count, sitting in that statement's own label column. The feature partly *is* the target. `build_history_features(..., deleak_labels=...)` subtracts the current row; `tests/test_history_leakage.py` pins both the defect and the fix.
+
+> ⚠️ Figures here are on **1,283 test rows**, not the 1,267 this project used to
+> report. `pd.read_csv(..., sep="\t")` defaults to treating `"` as a quote
+> character, and LIAR is full of quoted speech, so 45 rows across the three
+> splits were being silently merged into their predecessors — 16 of them in the
+> test set. `binary_truth_mlp.read_liar()` fixes it and
+> `tests/test_dataset_loading.py` pins it. Earlier numbers are not comparable.
 
 Two models are reported, and the distinction matters more than either number:
 
 | model | inputs | accuracy | 95% CI | precision | F1 |
 |---|---|---|---|---|---|
-| **Claim-only** (ships) | statement text | 61.88% | [59.12, 64.48] | 62.09% | 0.7106 |
-| **+ speaker context** | statement + subject/speaker/job/state/party/context + **de-leaked** history | 64.48% | [61.80, 66.93] | 71.02% | 0.6647 |
-| Majority-class baseline | — | 56.35% | — | — | — |
+| **Claim-only** (ships) | statement text | 62.74% | [60.17, 65.47] | 64.20% | 0.7020 |
+| **+ speaker context** | statement + subject/speaker/job/state/party/context + **de-leaked** history | 64.93% | [62.28, 67.34] | 72.09% | 0.6677 |
+| Majority-class baseline | — | 56.66% | — | — | — |
 
-The first answers *"what can the API do with a claim someone pasted?"* — the only question the product poses, since a pasted claim carries no speaker metadata. The second is the standard LIAR benchmark setup, reported for comparability with published results and **never** as this system's accuracy. Their intervals overlap, so the 2.6-point gap is suggestive rather than established.
+The first answers *"what can the API do with a claim someone pasted?"* — the only question the product poses, since a pasted claim carries no speaker metadata. The second is the standard LIAR benchmark setup, reported for comparability with published results and **never** as this system's accuracy. Their intervals overlap, so the 2.2-point gap is suggestive rather than established.
 
 Reproduce with `python train_speaker_context_model.py` (no pickle is committed; the model is not shipped).
 
@@ -671,41 +686,61 @@ The production-equivalent, statement-only evaluation:
 
 | Metric | Value |
 |---|---|
-| Accuracy | **61.88%**  (95% CI 59.12–64.48) |
-| Majority-class baseline | 56.35% |
-| Precision | 62.09% |
-| Recall | 83.05% |
-| F1 Score | 0.7106 |
-| AUC | 0.6722 |
-| Brier score | 0.2277 |
-| Expected calibration error | 0.0458 |
+| Accuracy | **62.74%**  (95% CI 60.17–65.47) |
+| Majority-class baseline | 56.66% |
+| Precision | 64.20% |
+| Recall | 77.44% |
+| F1 Score | 0.7020 |
+| ROC-AUC | 0.6760 |
+| Brier score | 0.2247 |
+| Expected calibration error | 0.0370 |
 
-Two things worth reading off that table rather than the accuracy alone.
+Three things worth reading off that table rather than the accuracy alone.
 
-**The gap is real.** The 95% bootstrap interval's *lower* bound (59.12%) sits
-above the majority-class baseline (56.35%), so the model beats "always answer
-true" by more than split luck. On 1267 rows a point estimate alone could not
-establish that, which is why the interval is reported and not just the number.
+**The gap over the baseline is real.** The 95% bootstrap interval's *lower*
+bound (60.17%) sits above the majority-class baseline (56.66%), so the model
+beats "always answer true" by more than split luck. On 1,283 rows a point
+estimate alone could not establish that, which is why the interval is reported
+and not just the number.
+
+**The improvement over the old model is not established on this split, and is
+on a larger one.** Against the MLP as it was actually served, the change is
+worth **+0.78 points, 95% CI [−0.70, +2.26]** — the test set's own interval is
+±2.6 points, so it cannot resolve a difference that small. The evidence for the
+change is the 11,553-row cross-validation above; on test, accuracy, AUC, Brier
+and calibration all move the right way at once, which is the most a split this
+size can say.
 
 **The probability means roughly what it says.** Expected calibration error is
-0.046 — under the ~0.1 threshold beyond which a score should not be shown to a
-user as a confidence. That matters more here than accuracy does, because this
-number is displayed *and* consumed downstream as a prior: a model that is 62%
-accurate while saying "0.9" when it means "0.6" would be worse than a less
-accurate one that knows what it does not know.
+0.037, improved from 0.044 — under the ~0.1 threshold beyond which a score
+should not be shown to a user as a confidence. That matters more here than
+accuracy does, because this number is displayed *and* consumed downstream as a
+prior: a model that is 62% accurate while saying "0.9" when it means "0.6"
+would be worse than a less accurate one that knows what it does not know.
 
-Both this and the Model Evaluation page are now scored through
+Both this and the Model Evaluation page are scored through
 `make_prediction_features_batch()` — the same function `main.py` calls — so the
-number describes the model as served. It previously did not: `evaluate_models.py`
-fed the shipped model speaker metadata and real credit-history counts it was
-never trained on and reported **56.9%**, while `evaluate_production_model.py`
-transformed the raw statement instead of going through `build_text_input()` and
-reported **62.35%**. Neither was what a request computes.
+number describes the model as served. It previously did not, twice over:
+`evaluate_models.py` fed the shipped model speaker metadata and real
+credit-history counts it was never trained on and reported **56.9%**, and
+`build_text_input()` prepended column-name tokens on every live request that
+training had never seen, worth another **0.5 points**. Neither was what a
+request computes; both are fixed and pinned by
+`tests/test_model_evaluation_path.py`.
+
+**The comparison models are real baselines now.** Both had never trained: the
+"Logistic Regression" in `classifier.py` scored **56.66%** — the majority-class
+rate to four decimals, with all 1,283 scores inside a 0.004-wide band — and the
+6-class MLP scored **20.81%** against a 20.81% majority baseline. Repaired they
+reach **62.43%** and **25.02%**. That the repaired logistic regression lands
+within 0.3 points of the shipped model is the honest headline: on this task,
+every model that trains at all arrives at the same place.
 
 This model is **never used to determine the final verdict** — see [Design principles](#design-principles). It's kept visible in the API response and on the Model Evaluation/Comparison pages purely for research transparency. Reproduce these numbers with:
 
 ```bash
 cd ml-service
+python train_experiments.py            # 5-fold CV selection; never reads test.tsv
 python evaluate_production_model.py    # the metrics above
 python evaluate_models.py              # regenerates evaluation_results.json
 ```
@@ -742,10 +777,10 @@ newschecker/
 │   ├── evidence_pipeline.py        Orchestrates the stages above
 │   ├── knowledge_verifier.py       Deterministic checks (arithmetic, well-known facts)
 │   ├── binary_truth_mlp.py         Legacy auxiliary MLP (from-scratch NumPy)
-│   ├── tfidf.py                    From-scratch TF-IDF vectorizer (feeds the legacy MLP only)
+│   ├── tfidf.py                    From-scratch TF-IDF vectorizer (feeds the legacy claim model only)
 │   ├── classifier.py / mlp_classifier.py   Experimental baselines, offline evaluation only
 │   ├── evaluate_models.py / evaluate_production_model.py   Offline evaluation scripts
-│   └── tests/                      475 tests across the modules above, incl.
+│   └── tests/                      503 tests across the modules above, incl.
 │                                    test_claim_edge_cases.py (end-to-end verdicts)
 ├── docs/screenshots/              README images
 ├── IMPROVEMENTS.md                 Dated engineering log of major fixes/audits
@@ -763,9 +798,11 @@ Being direct about these matters more than pretending they don't exist:
 - **Claim triage is heuristic.** `claim_triage.py` classifies by pattern, not by parsing. It handles the shapes in `tests/test_claim_edge_cases.py` — including the traps that broke it during development (factual superlatives read as opinions, irregular past tenses read as non-assertions, pasted links read as claims) — but an unusual phrasing can still land in the wrong bucket. The failure is designed to be safe in one direction: an over-admitted claim gets searched, an over-rejected one refuses to check something real, so the thresholds lean toward admitting.
 - **Temporal checking is coarse.** The pipeline *does* now compare an article's publish date against the claim's timeframe (see [Coverage modes](#nli-model--memory) — `recent` restricts retrieval to the last 30 days and refuses to let an older article confirm the claim). Three limits remain: providers differ on whether they supply a date at all — Wikipedia and DuckDuckGo supply none, and an undated document is never treated as stale, because deleting real evidence over a missing field is the worse error; the staleness window (45 days) is deliberately wider than the retrieval window, so a document from just outside it still counts; and nothing compares a date against the article's *own* internal timeline, so a recent retrospective about an old event is still readable as current coverage.
 - **Claim decomposition is regex-based, not a real parser.** `claim_decomposer.py` uses pattern matching for entities/predicates/negation/modality, not dependency parsing or a trained NER model. It works well for the claim shapes it's been tested against but isn't as robust as a full NLP pipeline would be.
-- **The legacy MLP works, and still cannot be a fact-checker.** On the LIAR test set it scores **61.88%** (95% CI 59.12–64.48) against a **56.35%** majority-class baseline. The interval's lower bound clears the baseline, so that +5.5 points is a real effect rather than split luck, and the model is calibrated (ECE 0.046). It is a respectable result for judging a claim from its wording alone.
+- **The legacy claim model works, and still cannot be a fact-checker.** On the LIAR test set it scores **62.74%** (95% CI 60.17–65.47) against a **56.66%** majority-class baseline. The interval's lower bound clears the baseline, so that +6.1 points is a real effect rather than split luck, and the model is calibrated (ECE 0.037). It is a respectable result for judging a claim from its wording alone.
 
-  It is still not a fact-checker, and the distinction is the architecture's whole premise: 62% on a dated US-political corpus says nothing about whether a specific claim made today is true, because the label is not deducible from the words. Only evidence settles that. So the verdict never reads this model's output — not because the model is weak, but because the task it solves is not the task the user asked. The Evaluation page states the baseline next to the accuracy rather than showing the figure on its own.
+  **It is also at the ceiling for that task.** 194 configurations across ten model families and ten text representations were swept on validation; the best of every family lands between 0.619 and 0.652, and 300-dimensional pretrained GloVe embeddings score the same as a bag of words. Errors concentrate exactly where the binary target cuts an ordinal scale between two adjacent human-assigned rungs: on the 37% of rows rated "barely-true" or "half-true" the model is at 0.538 — coin-flip — while on the extremes it reaches 0.78. Roughly 70% is not reachable from a claim's wording, by any model. See [docs/ML_MODEL_INVESTIGATION.md](docs/ML_MODEL_INVESTIGATION.md).
+
+  It is still not a fact-checker, and the distinction is the architecture's whole premise: 63% on a dated US-political corpus says nothing about whether a specific claim made today is true, because the label is not deducible from the words. Only evidence settles that. So the verdict never reads this model's output — not because the model is weak, but because the task it solves is not the task the user asked. The Evaluation page states the baseline next to the accuracy rather than showing the figure on its own.
 
   (This number was itself a bug for most of the project's life: the model was scored on speaker metadata it was never trained on, reporting 56.9% — see `IMPROVEMENTS.md` bug 34.)
 

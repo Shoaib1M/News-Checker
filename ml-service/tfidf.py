@@ -16,32 +16,94 @@ USED BY:
 
 import numpy as np
 import math
+import re
+
+# Character n-grams live in the same vocabulary as word n-grams, so they need a
+# prefix that no word n-gram can produce. `clean()` strips everything but
+# [a-z0-9 ], so a leading NUL is unreachable for a word token.
+CHAR_PREFIX = "\x00"
+
 
 class TFIDFVectorizer:
-    def __init__(self, ngram_range=(1, 2), min_df=2):
+    def __init__(
+        self,
+        ngram_range=(1, 2),
+        min_df=2,
+        char_ngram_range=None,
+        sublinear_tf=False,
+        smooth_idf=False,
+    ):
         self.vocab = {}          # Maps a token to its column index in the final vector
         self.idf_values = {}     # Stores the calculated IDF score for each token
         self.vocab_size = 0
-        
+
         # ngram_range=(1, 2) means we look at single words (unigrams) AND pairs of words (bigrams).
         # Example for "fake news": Unigrams: ["fake", "news"]. Bigrams: ["fake news"].
+        # Pass None to switch word n-grams off entirely (character-only model).
         self.ngram_range = ngram_range
-        
+
         # min_df (Minimum Document Frequency): Ignore words that appear in fewer than 2 documents.
         # This filters out extremely rare words or typos to keep the vocabulary size manageable.
         self.min_df = min_df
+
+        # Character n-grams, taken inside word boundaries. (3, 5) on "budget"
+        # gives " bu", "bud", "udg", ... " budg", "udget", "dget ". They survive
+        # the spelling variation, hyphenation and morphology that whole-word
+        # features miss ("tax", "taxes", "taxpayer" share nothing as words), and
+        # on this corpus they carry as much signal as the word features do -- see
+        # the sweep in docs/ML_MODEL_INVESTIGATION.md. None keeps the original
+        # word-only behaviour.
+        self.char_ngram_range = char_ngram_range
+
+        # tf = 1 + log(count) instead of count / total_tokens. The raw ratio
+        # makes a term's weight depend on how long the sentence is, which is not
+        # a property of the term; the log form is the standard fix and it is
+        # what every strong baseline in the sweep used.
+        self.sublinear_tf = sublinear_tf
+
+        # idf = log((1 + N) / (1 + df)) + 1 instead of log(N / df). The +1 inside
+        # avoids a zero-division on an unseen token and the +1 outside stops a
+        # term that appears in every document from being annihilated (log(N/N)=0
+        # deletes the feature rather than merely down-weighting it).
+        self.smooth_idf = smooth_idf
 
     """
     PURPOSE: Standardizes the text.
     """
     def clean(self, text):
-        import re
-        text = text.lower()
+        text = str(text).lower()
         # Keep letters, numbers, and spaces. Replace everything else with a space.
         text = re.sub(r'[^a-z0-9\s]', ' ', text)
         # Collapse multiple spaces into a single space
         text = re.sub(r'\s+', ' ', text).strip()
         return text.split()
+
+    """
+    PURPOSE: Character n-grams of each word, padded so that prefixes and
+    suffixes are distinguishable from the middle of a word.
+    """
+    def get_char_ngrams(self, words):
+        if not self.char_ngram_range:
+            return []
+        min_n, max_n = self.char_ngram_range
+        tokens = []
+        for word in words:
+            padded = f" {word} "
+            for n in range(min_n, max_n + 1):
+                if len(padded) < n:
+                    continue
+                for index in range(len(padded) - n + 1):
+                    tokens.append(CHAR_PREFIX + padded[index:index + n])
+        return tokens
+
+    """
+    PURPOSE: Every token this vectorizer knows how to produce for one document.
+    """
+    def tokenize(self, text):
+        words = self.clean(text)
+        tokens = self.get_ngrams(words) if self.ngram_range else []
+        tokens.extend(self.get_char_ngrams(words))
+        return tokens
 
     """
     PURPOSE: Generates unigrams and bigrams from a list of words.
@@ -76,8 +138,7 @@ class TFIDFVectorizer:
         # Step 1: Count how many documents contain each token
         doc_frequency = {}
         for doc in documents:
-            words = self.clean(doc)
-            tokens = set(self.get_ngrams(words)) # Use set() so we only count a word once per document
+            tokens = set(self.tokenize(doc)) # Use set() so we only count a word once per document
             for token in tokens:
                 doc_frequency[token] = doc_frequency.get(token, 0) + 1
 
@@ -101,19 +162,22 @@ class TFIDFVectorizer:
                 # Assign this token a permanent index/column in our vectors
                 self.vocab[token] = self.vocab_size
                 self.vocab_size += 1
-                
+
                 # Formula for IDF: log( Total Documents / Documents containing word )
-                self.idf_values[token] = math.log(total_docs / count)
+                if self.smooth_idf:
+                    self.idf_values[token] = math.log((1 + total_docs) / (1 + count)) + 1.0
+                else:
+                    self.idf_values[token] = math.log(total_docs / count)
 
     """
-    PURPOSE: Transforms a single sentence into a numerical array (vector).
+    PURPOSE: The non-zero (column, value) pairs for one document.
+    WHY SEPARATE FROM transform_one: a document touches a few dozen of tens of
+    thousands of columns. Training over 10k rows through the dense form costs
+    gigabytes for numbers that are all zero; this is the same arithmetic
+    without materialising them.
     """
-    def transform_one(self, text):
-        words = self.clean(text)
-        tokens = self.get_ngrams(words)
-        
-        # Create an array of zeros, exactly the size of our vocabulary
-        vector = np.zeros(self.vocab_size)
+    def transform_one_sparse(self, text):
+        tokens = self.tokenize(text)
 
         # Count how many times each token appears in THIS specific sentence
         token_counts = {}
@@ -121,19 +185,33 @@ class TFIDFVectorizer:
             token_counts[token] = token_counts.get(token, 0) + 1
 
         total_tokens = len(tokens)
-        
-        # Calculate TF-IDF
+        if not total_tokens:
+            return np.zeros(0, dtype=np.int64), np.zeros(0)
+
+        columns, values = [], []
         for token, count in token_counts.items():
-            if token in self.vocab:
+            index = self.vocab.get(token)
+            if index is None:
+                continue
+            if self.sublinear_tf:
+                tf = 1.0 + math.log(count)
+            else:
                 # TF (Term Frequency) = (Times word appears in sentence) / (Total words in sentence)
                 tf = count / total_tokens
-                # Get the pre-calculated IDF score
-                idf = self.idf_values.get(token, 0)
-                
-                # Combine them (TF * IDF) and place the result in the correct slot in the array
-                index = self.vocab[token]
-                vector[index] = tf * idf
+            columns.append(index)
+            values.append(tf * self.idf_values.get(token, 0.0))
 
+        return (np.array(columns, dtype=np.int64),
+                np.array(values, dtype=np.float64))
+
+    """
+    PURPOSE: Transforms a single sentence into a numerical array (vector).
+    """
+    def transform_one(self, text):
+        # Create an array of zeros, exactly the size of our vocabulary
+        vector = np.zeros(self.vocab_size)
+        columns, values = self.transform_one_sparse(text)
+        vector[columns] = values
         return vector
 
     """
@@ -141,6 +219,76 @@ class TFIDFVectorizer:
     """
     def transform(self, documents):
         return np.array([self.transform_one(doc) for doc in documents])
+
+    """
+    PURPOSE: Transforms a list of sentences into the sparse triples
+    (row indices, column indices, values) plus the matrix shape.
+
+    WHY: this is what makes a 74,000-feature model trainable at all. The dense
+    form of the training set would be 10,240 x 74,424 float64 = 6.1 GB; the
+    sparse form is about 4 MB, because each claim touches ~330 columns.
+    """
+    def transform_sparse(self, documents, l2_normalize=True):
+        documents = list(documents)
+        rows, columns, values = [], [], []
+        for row, doc in enumerate(documents):
+            column, value = self.transform_one_sparse(doc)
+            if l2_normalize:
+                norm = np.linalg.norm(value)
+                if norm > 0:
+                    value = value / norm
+            rows.append(np.full(len(column), row, dtype=np.int64))
+            columns.append(column)
+            values.append(value)
+
+        empty_int = np.zeros(0, dtype=np.int64)
+        return SparseMatrix(
+            rows=np.concatenate(rows) if rows else empty_int,
+            columns=np.concatenate(columns) if columns else empty_int,
+            values=np.concatenate(values) if values else np.zeros(0),
+            n_rows=len(documents),
+            n_columns=self.vocab_size,
+        )
+
+
+class SparseMatrix:
+    """The three arrays a sparse row-major matrix needs, and the two products
+    a linear model needs from it. Deliberately not scipy: the ml-service ships
+    without scikit-learn or scipy and the README says so."""
+
+    __slots__ = ("rows", "columns", "values", "n_rows", "n_columns")
+
+    def __init__(self, rows, columns, values, n_rows, n_columns):
+        self.rows = rows
+        self.columns = columns
+        self.values = values
+        self.n_rows = n_rows
+        self.n_columns = n_columns
+
+    @property
+    def shape(self):
+        return (self.n_rows, self.n_columns)
+
+    def dot(self, weights):
+        """X @ w -- one scalar per row."""
+        return np.bincount(
+            self.rows,
+            weights=self.values * weights[self.columns],
+            minlength=self.n_rows,
+        )
+
+    def transpose_dot(self, per_row):
+        """X.T @ g -- one scalar per feature, i.e. every feature's gradient."""
+        return np.bincount(
+            self.columns,
+            weights=self.values * per_row[self.rows],
+            minlength=self.n_columns,
+        )
+
+    def to_dense(self):
+        dense = np.zeros((self.n_rows, self.n_columns))
+        dense[self.rows, self.columns] = self.values
+        return dense
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +304,11 @@ if __name__ == "__main__":
         "context"
     ]
 
-    df = pd.read_csv('../data/train.tsv', sep='\t', names=columns)
+    # read_liar(), not a bare read_csv: the default parser treats `"` as a
+    # quote character and merges rows. See binary_truth_mlp.read_liar.
+    from binary_truth_mlp import load_split
+
+    df = load_split("train")
 
     vectorizer = TFIDFVectorizer()
 

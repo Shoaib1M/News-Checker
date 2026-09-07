@@ -42,6 +42,7 @@ if str(SERVICE_DIR) not in sys.path:
 
 from binary_truth_mlp import (  # noqa: E402
     COLUMNS,
+    read_liar,
     HISTORY_COLUMNS,
     LABEL_TO_HISTORY_COLUMN,
     build_history_features,
@@ -51,7 +52,7 @@ DATA = SERVICE_DIR / "data"
 
 
 def load_all():
-    frames = [pd.read_csv(DATA / f"{name}.tsv", sep="\t", names=COLUMNS)
+    frames = [read_liar(DATA / f"{name}.tsv")
               for name in ("train", "valid", "test")]
     return pd.concat(frames, ignore_index=True)
 

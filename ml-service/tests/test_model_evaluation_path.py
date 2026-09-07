@@ -79,14 +79,39 @@ class TestOneFeaturePath(unittest.TestCase):
         self.assertNotIn("np.hstack", body,
                          "make_prediction_features is rebuilding features itself")
 
-    def test_metadata_defaults_to_what_the_api_sends(self):
-        """Blank strings and zero counts — never a guessed speaker or history."""
+    def test_a_statement_only_request_is_vectorised_as_the_bare_statement(self):
+        """THE TRAIN/SERVE SKEW THIS PINS:
+
+        `build_text_input` used to emit every column unconditionally, so a
+        live request — which fills all the metadata with blanks — reached the
+        vectorizer as
+
+            "statement the minister resigned subject  speaker  job  state  party  context "
+
+        while `binary_truth_mlp.main()` trained on the bare statement. Seven
+        constant tokens and seven boundary bigrams, on every request, against
+        a vocabulary that had never seen them. Measured, it cost 0.47 points
+        (61.88% served vs 62.35% on the text it was trained on).
+
+        An earlier version of this test asserted the opposite — that every
+        column name appears in the text — and so pinned the defect in place.
+        """
         make_prediction_features_batch(
             self.vectorizer, self.train_max_values, ["the minister resigned"])
         (text,) = self.vectorizer.seen
+        self.assertEqual(text, "the minister resigned")
+
+    def test_metadata_is_tagged_with_its_column_when_it_is_actually_present(self):
+        """Skipping blanks must not mean losing metadata that was supplied:
+        "texas" as a state and "texas" inside a claim are different features."""
+        make_prediction_features_batch(
+            self.vectorizer, self.train_max_values, ["the minister resigned"],
+            state="Texas", party="republican")
+        (text,) = self.vectorizer.seen
+        self.assertEqual(text, "the minister resigned state Texas party republican")
         for column in TEXT_FEATURE_COLUMNS:
-            self.assertIn(column, text)
-        self.assertIn("the minister resigned", text)
+            if column not in ("statement", "state", "party"):
+                self.assertNotIn(column, text)
 
     def test_history_columns_are_zero_by_default(self):
         features = make_prediction_features_batch(
@@ -119,7 +144,8 @@ class TestTheEvaluatorsUseIt(unittest.TestCase):
 
     def test_evaluate_models_scores_through_the_serving_path(self):
         source = self.source("evaluate_models.py")
-        self.assertIn("make_prediction_features_batch(", source)
+        self.assertTrue("predict_proba_texts(" in source
+                        or "make_prediction_features_batch(" in source)
 
     def test_evaluate_models_no_longer_feeds_the_model_speaker_metadata(self):
         source = self.source("evaluate_models.py")
@@ -128,8 +154,19 @@ class TestTheEvaluatorsUseIt(unittest.TestCase):
 
     def test_the_production_evaluator_scores_through_the_serving_path(self):
         source = self.source("evaluate_production_model.py")
-        self.assertIn("make_prediction_features_batch(", source)
+        # predict_proba_texts() is make_prediction_features_batch() in chunks —
+        # the dense serving form of 1,267 rows x 62,257 features is 631 MB in
+        # one allocation. The guard is that evaluation goes through the serving
+        # construction, not that it does so in a single call.
+        self.assertTrue("predict_proba_texts(" in source
+                        or "make_prediction_features_batch(" in source)
         self.assertNotIn("vectorizer.transform(test_df", source)
+
+    def test_the_chunked_scorer_really_does_delegate(self):
+        """Otherwise the guard above could be satisfied by a name alone."""
+        source = (SERVICE_DIR / "binary_truth_mlp.py").read_text()
+        body = source.split("def predict_proba_texts(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("make_prediction_features_batch(", body)
 
 
 if __name__ == "__main__":

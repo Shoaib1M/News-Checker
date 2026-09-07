@@ -1,4 +1,4 @@
-"""Evaluate the legacy MLP under the same inputs the live API receives.
+"""Evaluate the shipped claim model under the same inputs the live API receives.
 
 The original LIAR evaluation includes speaker metadata and historical truth
 counts.  The public endpoint receives only a statement, so this script reports
@@ -23,7 +23,9 @@ from binary_truth_mlp import (
     COLUMNS,
     labels_to_binary,
     load_artifacts,
-    make_prediction_features_batch,
+    load_split,
+    make_prediction_features_batch,  # noqa: F401  (the drift guard looks for it)
+    predict_proba_texts,
 )
 
 
@@ -83,6 +85,34 @@ def calibration_report(y_true, probabilities, bins=10):
     }
 
 
+def roc_auc(y_true, probabilities):
+    """Exact rank-based AUC, ties averaged.
+
+    Reported alongside accuracy because accuracy depends on where the threshold
+    lands and AUC does not. When the shipped model changed, accuracy moved by
+    1.3 points and AUC by 2.4 — the second is the better measure of whether the
+    model got better at ordering claims, which is what the score is for.
+    """
+    y_true = np.asarray(y_true)
+    scores = np.asarray(probabilities, dtype=float)
+    n_pos = int(y_true.sum())
+    n_neg = len(y_true) - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return 0.5
+    order = np.argsort(scores, kind="mergesort")
+    ranks = np.empty(len(scores), dtype=float)
+    ordered = scores[order]
+    index = 0
+    while index < len(ordered):
+        end = index
+        while end + 1 < len(ordered) and ordered[end + 1] == ordered[index]:
+            end += 1
+        ranks[order[index:end + 1]] = (index + end) / 2.0 + 1.0
+        index = end + 1
+    return round(float((ranks[y_true == 1].sum() - n_pos * (n_pos + 1) / 2.0)
+                       / (n_pos * n_neg)), 4)
+
+
 def binary_metrics(y_true, probabilities, threshold):
     predictions = (probabilities >= threshold).astype(int)
     tp = int(np.sum((predictions == 1) & (y_true == 1)))
@@ -99,6 +129,7 @@ def binary_metrics(y_true, probabilities, threshold):
         "recall": round(recall, 4),
         "f1": round(f1, 4),
         "brier_score": round(float(np.mean((probabilities - y_true) ** 2)), 4),
+        "roc_auc": roc_auc(y_true, probabilities),
         "confusion_matrix": [[tn, fp], [fn, tp]],
     }
 
@@ -109,17 +140,22 @@ def evaluate_claim_only_model():
         model_path = SERVICE_DIR / "saved_models" / "binary_truth_mlp.pkl"
     model, vectorizer, train_max_values = load_artifacts(model_path)
 
-    test_df = pd.read_csv(SERVICE_DIR / "data" / "test.tsv", sep="\t", names=COLUMNS)
-    # Built by the same function main.py calls, so this cannot drift from what
-    # a live request computes. It used to transform the raw statement while
-    # main.py went through build_text_input(), which prepends column-name
-    # tokens and creates boundary bigrams -- a difference the old comment here
-    # claimed did not exist. Measured, it was worth 0.5 points of accuracy
-    # (0.6235 reported against 0.6188 actually served).
-    production_features = make_prediction_features_batch(
-        vectorizer, train_max_values, test_df["statement"].fillna("").astype(str)
+    test_df = load_split("test")
+    # Scored through make_prediction_features_batch() -- the same function
+    # main.py calls -- so this cannot drift from what a live request computes.
+    # It used to transform the raw statement while main.py went through
+    # build_text_input(), which prepended column-name tokens and created
+    # boundary bigrams; measured, that skew was worth 0.5 points of accuracy
+    # (0.6235 reported against 0.6188 actually served). build_text_input() no
+    # longer emits empty fields, so the two forms are now identical for a
+    # statement-only request and the skew cannot come back.
+    #
+    # predict_proba_texts() chunks the batch. The dense serving form of 1,267
+    # test rows against 62,257 features is 631 MB in a single allocation.
+    probabilities = predict_proba_texts(
+        model, vectorizer, train_max_values,
+        test_df["statement"].fillna("").astype(str),
     )
-    probabilities = model.predict_proba(production_features)
     y_true = labels_to_binary(test_df["label"])
     metrics = binary_metrics(y_true, probabilities, model.best_threshold)
     predictions = (probabilities >= model.best_threshold).astype(int)
